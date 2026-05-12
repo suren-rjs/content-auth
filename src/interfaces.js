@@ -11,12 +11,6 @@ export class ICrawler {
  * Interface for the content searcher service
  */
 export class ISearcher {
-  /**
-   * Counts occurrences of search text in HTML.
-   * @param {string} html 
-   * @param {string} searchText 
-   * @returns {number}
-   */
   countOccurrences(html, searchText) {
     throw new Error('Method not implemented');
   }
@@ -28,7 +22,7 @@ export class ISearcher {
 export class IExporter {
   /**
    * Exports data to an output path.
-   * @param {Array<{url: string, count: number}>} data 
+   * @param {Array<{pageUrl: string, source: string, count: number}>} data 
    * @param {string} outputPath 
    */
   async export(data, outputPath) {

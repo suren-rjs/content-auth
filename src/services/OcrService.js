@@ -28,7 +28,6 @@ export class OcrService {
         errorHandler: (err) => console.error('OCR Worker Error:', err)
       });
       
-      // Removed strict whitelist to allow the engine to be more flexible with stylized shapes
       await this.worker.setParameters({
         tessjs_create_hocr: '0',
         tessjs_create_tsv: '0',
@@ -58,11 +57,11 @@ export class OcrService {
       let pipeline = sharp(imageBuffer).grayscale();
       
       if (type === 'high-contrast') {
-        pipeline = pipeline.linear(2, -0.5); // Increase contrast significantly
+        pipeline = pipeline.linear(2, -0.5);
       } else if (type === 'threshold') {
-        pipeline = pipeline.threshold(180); // Higher threshold for lighter text
+        pipeline = pipeline.threshold(180);
       } else if (type === 'inverted') {
-        pipeline = pipeline.negate(); // Invert colors if text is light on dark
+        pipeline = pipeline.negate();
       }
       
       return await pipeline.normalize().sharpen().toBuffer();
@@ -76,26 +75,46 @@ export class OcrService {
     return Buffer.from(response.data, 'binary');
   }
 
+  /**
+   * Comprehensive extraction of image URLs from HTML, including picture tags.
+   * Note: CSS backgrounds are handled by the WebCrawler via Puppeteer.
+   */
   extractImageUrls(html, baseUrl) {
     const $ = cheerio.load(html);
     const urls = [];
+
+    // Standard <img> tags
     $('img[src]').each((_, el) => {
       const src = $(el).attr('src');
-      if (!src) return;
+      if (src) urls.push(src);
+    });
 
+    // <picture> <source> tags
+    $('picture source[srcset]').each((_, el) => {
+      const srcset = $(el).attr('srcset');
+      if (srcset) {
+        // Grab the first URL in the srcset (usually the original/largest)
+        const firstUrl = srcset.split(',')[0].trim().split(' ')[0];
+        urls.push(firstUrl);
+      }
+    });
+
+    const finalUrls = [];
+    urls.forEach(src => {
       try {
         const absoluteUrl = new URL(src, baseUrl);
         const pathname = absoluteUrl.pathname.toLowerCase();
         
-        const isOcrCompatible = /\.(png|jpe?g|webp|bmp)$/i.test(pathname);
+        const isOcrCompatible = /\.(png|jpe?g|webp|bmp|svg)$/i.test(pathname);
         const isNotIcon = !/(favicon|pixel|tracker|spacer)/i.test(pathname);
         
         if (isOcrCompatible && isNotIcon) {
-          urls.push(absoluteUrl.toString());
+          finalUrls.push(absoluteUrl.toString());
         }
       } catch (e) {}
     });
-    return [...new Set(urls)];
+
+    return [...new Set(finalUrls)];
   }
 
   /**
@@ -108,7 +127,6 @@ export class OcrService {
 
       const originalBuffer = await this.downloadImage(imageUrl);
 
-      // Multi-pass approach: try different filters to see which one works
       const passes = [
         originalBuffer,
         await this.preprocessImage(originalBuffer, 'default'),
@@ -118,6 +136,7 @@ export class OcrService {
       ];
 
       const normalizedSearch = searchText.replace(/\s+/g, ' ').trim().toLowerCase();
+      const searchWords = normalizedSearch.split(' ');
       
       for (const buffer of passes) {
         const { data: { text } } = await this.worker.recognize(buffer);
@@ -125,21 +144,21 @@ export class OcrService {
         
         const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
         
-        // 1. Direct match
         if (normalizedText.includes(normalizedSearch)) return 1;
 
-        // 2. Fuzzy match (more aggressive for stylized text)
-        const searchWords = normalizedSearch.split(' ');
         if (searchWords.length >= 2) {
           let matchCount = 0;
           for (const word of searchWords) {
-            // Check for partial word matches (at least 70% of word length)
-            if (word.length >= 3) {
-              const regex = new RegExp(word.substring(0, Math.floor(word.length * 0.7)), 'i');
+            if (word.length <= 3) {
+              const regex = new RegExp(`\\b${word}\\b`, 'i');
               if (regex.test(normalizedText)) matchCount++;
+            } else {
+              const prefixLen = Math.max(3, Math.floor(word.length * 0.75));
+              const prefix = word.substring(0, prefixLen);
+              if (normalizedText.includes(prefix)) matchCount++;
             }
           }
-          if (matchCount / searchWords.length >= 0.5) return 1;
+          if (matchCount / searchWords.length >= 0.75) return 1;
         }
       }
 

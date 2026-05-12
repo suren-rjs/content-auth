@@ -11,28 +11,26 @@ const program = new Command();
 
 program
   .name('content-auth')
-  .description('Crawl a website and search for content, exporting matching URLs to Excel')
-  .version('1.0.0')
+  .description('Comprehensive website content audit: Search visible text, hidden attributes, and images')
+  .version('1.1.0')
   .requiredOption('-u, --url <url>', 'Base URL to start crawling from')
   .requiredOption('-c, --content <content>', 'Text content to search for')
   .option('-o, --output <path>', 'Output Excel file path', 'results.xlsx')
   .option('-t, --threads <number>', 'Number of concurrent requests', '5')
   .option('-i, --interact <selector>', 'CSS selector to click before searching (e.g. ".expand-btn")')
-  .option('--ocr', 'Enable OCR to search for text within images (slower)', false)
   .action(async (options) => {
     try {
-      const { url, content, output, threads, interact, ocr } = options;
+      const { url, content, output, threads, interact } = options;
       
       const crawler = new WebCrawler(parseInt(threads));
       const searcher = new HtmlSearcher();
       const exporter = new ExcelExporter();
-      const ocrService = ocr ? new OcrService() : null;
+      const ocrService = new OcrService(); // Always on
       
       const service = new CrawlAndSearchService(crawler, searcher, exporter, ocrService);
       
       await service.execute(url, content, output, {
-        interactionSelector: interact,
-        useOcr: ocr
+        interactionSelector: interact
       });
     } catch (error) {
       console.error('An error occurred:', error.message);

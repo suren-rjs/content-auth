@@ -10,9 +10,6 @@ export class WebCrawler extends ICrawler {
     this.browser = null;
   }
 
-  /**
-   * Initializes the browser instance.
-   */
   async init() {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
@@ -22,9 +19,6 @@ export class WebCrawler extends ICrawler {
     }
   }
 
-  /**
-   * Closes the browser instance.
-   */
   async close() {
     if (this.browser) {
       await this.browser.close();
@@ -32,7 +26,44 @@ export class WebCrawler extends ICrawler {
     }
   }
 
-  async crawl(baseUrl, onPageFound) {
+  async interact(page, selector) {
+    if (!selector) return;
+    
+    try {
+      console.log(`Interacting with elements matching: ${selector}`);
+      const elements = await page.$$(selector);
+      for (const element of elements) {
+        try {
+          await element.click();
+          await new Promise(r => setTimeout(r, 500));
+        } catch (e) {}
+      }
+      await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+    } catch (error) {
+      console.error(`Interaction failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extracts background images using Puppeteer.
+   */
+  async extractBackgroundImages(page) {
+    return await page.evaluate(() => {
+      const urls = [];
+      const allElements = document.querySelectorAll('*');
+      for (const el of allElements) {
+        const bg = window.getComputedStyle(el).backgroundImage;
+        if (bg && bg !== 'none' && bg.startsWith('url(')) {
+          const url = bg.match(/url\(["']?([^"']+)["']?\)/)?.[1];
+          if (url) urls.push(url);
+        }
+      }
+      return [...new Set(urls)];
+    });
+  }
+
+  async crawl(baseUrl, onPageFound, options = {}) {
+    const { interactionSelector } = options;
     await this.init();
     const origin = new URL(baseUrl).origin;
     const tasks = [];
@@ -46,25 +77,31 @@ export class WebCrawler extends ICrawler {
         console.log(`Crawling: ${url}`);
         page = await this.browser.newPage();
         
-        // Set a reasonable timeout and wait for network to be idle
-        // This ensures API calls made by the page have a chance to finish
         await page.goto(url, { 
           waitUntil: 'networkidle2', 
           timeout: 60000 
         });
 
-        // Get the fully rendered HTML
-        const html = await page.content();
-        await onPageFound(url, html);
+        if (interactionSelector) {
+          await this.interact(page, interactionSelector);
+        }
 
-        // Extract links from the rendered DOM
+        // Get rendered HTML
+        const html = await page.content();
+        
+        // Extract background images via computed style
+        const backgroundImages = await this.extractBackgroundImages(page);
+        
+        // Notify observer with both HTML and extra image URLs
+        await onPageFound(url, html, { backgroundImages });
+
         const links = await page.evaluate((origin) => {
           return Array.from(document.querySelectorAll('a[href]'))
             .map(a => a.href)
             .filter(href => {
               try {
                 const u = new URL(href);
-                u.hash = ''; // Remove fragments
+                u.hash = '';
                 return u.origin === origin;
               } catch (e) {
                 return false;
@@ -72,7 +109,6 @@ export class WebCrawler extends ICrawler {
             });
         }, origin);
 
-        // Schedule new links
         for (const link of links) {
           const cleanUrl = new URL(link);
           cleanUrl.hash = '';
@@ -89,10 +125,8 @@ export class WebCrawler extends ICrawler {
       }
     };
 
-    // Start with the base URL
     tasks.push(this.limit(() => crawlPage(baseUrl)));
 
-    // Wait for all tasks to complete
     let i = 0;
     while (i < tasks.length) {
       await tasks[i];

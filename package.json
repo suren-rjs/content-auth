@@ -1,6 +1,6 @@
 {
   "name": "content-auth-export",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Crawl and search content in a website and export to Excel",
   "main": "index.js",
   "type": "module",

@@ -4,7 +4,7 @@ import { IExporter } from '../interfaces.js';
 export class ExcelExporter extends IExporter {
   /**
    * Exports data to an Excel file.
-   * @param {Array<{url: string, count: number}>} data - List of results.
+   * @param {Array<{pageUrl: string, source: string, count: number}>} data - List of results.
    * @param {string} outputPath - Path to the output file.
    */
   async export(data, outputPath) {
@@ -12,7 +12,8 @@ export class ExcelExporter extends IExporter {
     const worksheet = workbook.addWorksheet('Search Results');
 
     worksheet.columns = [
-      { header: 'URL', key: 'url', width: 80 },
+      { header: 'Page URL', key: 'pageUrl', width: 60 },
+      { header: 'Source', key: 'source', width: 100 },
       { header: 'Count', key: 'count', width: 15 }
     ];
 

@@ -2,7 +2,7 @@
  * Interface for the crawler service
  */
 export class ICrawler {
-  async crawl(baseUrl, onPageFound) {
+  async crawl(baseUrl, onPageFound, options = {}) {
     throw new Error('Method not implemented');
   }
 }
@@ -11,7 +11,13 @@ export class ICrawler {
  * Interface for the content searcher service
  */
 export class ISearcher {
-  matches(html, searchText) {
+  /**
+   * Counts occurrences of search text in HTML.
+   * @param {string} html 
+   * @param {string} searchText 
+   * @returns {number}
+   */
+  countOccurrences(html, searchText) {
     throw new Error('Method not implemented');
   }
 }
@@ -20,6 +26,11 @@ export class ISearcher {
  * Interface for the exporter service
  */
 export class IExporter {
+  /**
+   * Exports data to an output path.
+   * @param {Array<{url: string, count: number}>} data 
+   * @param {string} outputPath 
+   */
   async export(data, outputPath) {
     throw new Error('Method not implemented');
   }

@@ -27,6 +27,44 @@ export class WebCrawler extends ICrawler {
   }
 
   /**
+   * Normalizes a URL to prevent duplicate crawling of functionally identical pages.
+   * Strips trailing slashes and common index filenames (index.html, index.php, etc.).
+   * @param {string} urlString - The URL to normalize.
+   * @returns {string} - The normalized URL.
+   */
+  normalizeUrl(urlString) {
+    try {
+      const url = new URL(urlString);
+      url.hash = ''; // Hashes never change the page content for a search
+      
+      let pathname = url.pathname;
+      
+      // 1. Consistency: remove trailing slash (except for root '/')
+      if (pathname.length > 1 && pathname.endsWith('/')) {
+        pathname = pathname.slice(0, -1);
+      }
+      
+      // 2. Remove common default document names
+      const indexFiles = ['/index.html', '/index.htm', '/index.php', '/index.asp', '/default.aspx', '/home'];
+      const lowerPath = pathname.toLowerCase();
+      
+      for (const file of indexFiles) {
+        if (lowerPath.endsWith(file)) {
+          pathname = pathname.slice(0, -file.length);
+          break;
+        }
+      }
+      
+      // Ensure we don't end up with an empty string for the pathname
+      url.pathname = pathname || '/';
+      
+      return url.toString().replace(/\/$/, '') || url.origin + '/';
+    } catch (e) {
+      return urlString;
+    }
+  }
+
+  /**
    * Extracts background images using Puppeteer.
    */
   async extractBackgroundImages(page) {
@@ -85,7 +123,8 @@ export class WebCrawler extends ICrawler {
     const origin = new URL(baseUrl).origin;
     const tasks = [];
 
-    const crawlPage = async (url) => {
+    const crawlPage = async (rawUrl) => {
+      const url = this.normalizeUrl(rawUrl);
       if (this.visited.has(url)) return;
       this.visited.add(url);
 
@@ -114,7 +153,6 @@ export class WebCrawler extends ICrawler {
             .filter(href => {
               try {
                 const u = new URL(href);
-                u.hash = '';
                 return u.origin === origin;
               } catch (e) {
                 return false;
@@ -123,12 +161,9 @@ export class WebCrawler extends ICrawler {
         }, origin);
 
         for (const link of links) {
-          const cleanUrl = new URL(link);
-          cleanUrl.hash = '';
-          const finalUrl = cleanUrl.toString();
-          
-          if (!this.visited.has(finalUrl)) {
-            tasks.push(this.limit(() => crawlPage(finalUrl)));
+          const normalizedLink = this.normalizeUrl(link);
+          if (!this.visited.has(normalizedLink)) {
+            tasks.push(this.limit(() => crawlPage(normalizedLink)));
           }
         }
       } catch (error) {

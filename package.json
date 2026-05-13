@@ -5,7 +5,7 @@
   "main": "src/services/CrawlAndSearchService.js",
   "type": "module",
   "bin": {
-    "content-auth": "./bin/index.js"
+    "content-auth": "bin/index.js"
   },
   "files": [
     "bin",
@@ -20,7 +20,9 @@
     "type": "git",
     "url": "git+https://github.com/suren-rjs/content-auth.git"
   },
-  "node": ">=18.0.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "keywords": [
     "audit",
     "content",

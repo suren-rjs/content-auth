@@ -12,7 +12,7 @@ const program = new Command();
 program
   .name('content-auth')
   .description('Comprehensive website content audit: Search visible text, hidden attributes, and images')
-  .version('1.1.0')
+  .version('1.3.0')
   .requiredOption('-u, --url <url>', 'Base URL to start crawling from')
   .requiredOption('-c, --content <content>', 'Text content to search for')
   .option('-o, --output <path>', 'Output Excel file path', 'results.xlsx')
@@ -30,7 +30,8 @@ program
       const service = new CrawlAndSearchService(crawler, searcher, exporter, ocrService);
       
       await service.execute(url, content, output, {
-        interactionSelector: interact
+        interactionSelector: interact,
+        screenshots: true
       });
     } catch (error) {
       console.error('An error occurred:', error.message);

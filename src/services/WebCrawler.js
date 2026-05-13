@@ -26,24 +26,6 @@ export class WebCrawler extends ICrawler {
     }
   }
 
-  async interact(page, selector) {
-    if (!selector) return;
-    
-    try {
-      console.log(`Interacting with elements matching: ${selector}`);
-      const elements = await page.$$(selector);
-      for (const element of elements) {
-        try {
-          await element.click();
-          await new Promise(r => setTimeout(r, 500));
-        } catch (e) {}
-      }
-      await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
-    } catch (error) {
-      console.error(`Interaction failed: ${error.message}`);
-    }
-  }
-
   /**
    * Extracts background images using Puppeteer.
    */
@@ -62,8 +44,43 @@ export class WebCrawler extends ICrawler {
     });
   }
 
+  /**
+   * Highlights text on the page and takes a screenshot.
+   * @param {Object} page - Puppeteer page object.
+   * @param {string} searchText - Text to highlight.
+   * @returns {Promise<Buffer>} - Screenshot buffer.
+   */
+  async captureScreenshot(page, searchText) {
+    try {
+      await page.evaluate((text) => {
+        // Simple search and highlight logic
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let node;
+        const matches = [];
+        while (node = walker.nextNode()) {
+          if (node.textContent.toLowerCase().includes(text.toLowerCase())) {
+            matches.push(node.parentElement);
+          }
+        }
+
+        matches.forEach(el => {
+          el.style.outline = '5px solid red';
+          el.style.backgroundColor = 'yellow';
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }, searchText);
+
+      // Wait a bit for scroll and rendering
+      await new Promise(r => setTimeout(r, 500));
+
+      return await page.screenshot({ fullPage: false });
+    } catch (error) {
+      console.error(`Failed to capture screenshot: ${error.message}`);
+      return null;
+    }
+  }
+
   async crawl(baseUrl, onPageFound, options = {}) {
-    const { interactionSelector } = options;
     await this.init();
     const origin = new URL(baseUrl).origin;
     const tasks = [];
@@ -82,18 +99,14 @@ export class WebCrawler extends ICrawler {
           timeout: 60000 
         });
 
-        if (interactionSelector) {
-          await this.interact(page, interactionSelector);
-        }
-
         // Get rendered HTML
         const html = await page.content();
         
         // Extract background images via computed style
         const backgroundImages = await this.extractBackgroundImages(page);
         
-        // Notify observer with both HTML and extra image URLs
-        await onPageFound(url, html, { backgroundImages });
+        // Notify observer with both HTML, page object (for screenshots), and extra image URLs
+        await onPageFound(url, html, { backgroundImages, page });
 
         const links = await page.evaluate((origin) => {
           return Array.from(document.querySelectorAll('a[href]'))

@@ -1,4 +1,4 @@
-# Content-Auth-Export (v1.4.0)
+# Content-Auth-Export (v1.1.0)
 
 A professional-grade, comprehensive Node.js CLI tool for auditing website content. It performs an exhaustive search for text strings across all layers of a site: visible UI text, hidden accessibility attributes, SEO metadata, and text embedded within all images (including SVGs and CSS backgrounds).
 

@@ -24,3 +24,4 @@ coverage/
 # IDE files
 .vscode/
 .idea/
+eng.traineddata

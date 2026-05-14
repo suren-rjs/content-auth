@@ -1,28 +1,39 @@
 import ExcelJS from 'exceljs';
+import path from 'path';
+import fs from 'fs';
 import { IExporter } from '../interfaces.js';
 
 export class ExcelExporter extends IExporter {
   /**
-   * Exports data to an Excel file with optional embedded screenshots.
-   * @param {Array<{pageUrl: string, source: string, count: number, screenshot?: Buffer}>} data - List of results.
+   * Updates or creates an Excel file with a single result.
+   * @param {Object} item - The result item {pageUrl, source, count, screenshot?}.
    * @param {string} outputPath - Path to the output file.
    */
-  async export(data, outputPath) {
+  async update(item, outputPath) {
+    const absolutePath = path.resolve(outputPath);
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Search Results');
+    let worksheet;
 
-    const hasScreenshots = data.some(item => item.screenshot);
+    try {
+      if (fs.existsSync(absolutePath)) {
+        await workbook.xlsx.readFile(absolutePath);
+        worksheet = workbook.getWorksheet('Search Results');
+      }
+      
+      if (!worksheet) {
+        worksheet = workbook.addWorksheet('Search Results');
+        worksheet.columns = [
+          { header: 'Page URL', key: 'pageUrl', width: 40 },
+          { header: 'Source', key: 'source', width: 60 },
+          { header: 'Count', key: 'count', width: 10 },
+          { header: 'Screenshot', key: 'screenshot', width: 40 }
+        ];
+        worksheet.getRow(1).font = { bold: true };
+        worksheet.getColumn('count').alignment = { horizontal: 'center' };
+        worksheet.getColumn('screenshot').alignment = { vertical: 'middle', horizontal: 'center' };
+      }
 
-    worksheet.columns = [
-      { header: 'Page URL', key: 'pageUrl', width: 40 },
-      { header: 'Source', key: 'source', width: 60 },
-      { header: 'Count', key: 'count', width: 10 },
-      ...(hasScreenshots ? [{ header: 'Screenshot', key: 'screenshot', width: 40 }] : [])
-    ];
-
-    for (let i = 0; i < data.length; i++) {
-      const item = data[i];
-      const rowNumber = i + 2; // +1 for 1-based index, +1 for header
+      const rowNumber = worksheet.rowCount + 1;
       const row = worksheet.addRow({
         pageUrl: item.pageUrl,
         source: item.source,
@@ -41,20 +52,25 @@ export class ExcelExporter extends IExporter {
           editAs: 'oneCell'
         });
 
-        row.height = 160; // Make row tall enough for the image
+        row.height = 160;
       }
-    }
 
-    // Style the header
-    worksheet.getRow(1).font = { bold: true };
-    
-    // Center alignment
-    worksheet.getColumn('count').alignment = { horizontal: 'center' };
-    if (hasScreenshots) {
-      worksheet.getColumn('screenshot').alignment = { vertical: 'middle', horizontal: 'center' };
+      await workbook.xlsx.writeFile(absolutePath);
+    } catch (error) {
+      console.error(`  [ERROR] Failed to update Excel file: ${error.message}`);
     }
+  }
 
-    await workbook.xlsx.writeFile(outputPath);
-    console.log(`Results exported to ${outputPath}`);
+  /**
+   * legacy support for bulk export if needed
+   */
+  async export(data, outputPath) {
+    const absolutePath = path.resolve(outputPath);
+    if (fs.existsSync(absolutePath)) {
+      try { fs.unlinkSync(absolutePath); } catch(e) {}
+    }
+    for (const item of data) {
+      await this.update(item, outputPath);
+    }
   }
 }

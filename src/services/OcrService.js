@@ -2,11 +2,18 @@ import { createWorker } from 'tesseract.js';
 import * as cheerio from 'cheerio';
 import sharp from 'sharp';
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+
+const unlinkAsync = promisify(fs.unlink);
+const existsAsync = promisify(fs.exists);
 
 export class OcrService {
   constructor() {
     this.worker = null;
     this.isInitializing = false;
+    this.cachePath = path.resolve(process.cwd(), '.tesseract-cache');
   }
 
   /**
@@ -23,8 +30,13 @@ export class OcrService {
 
     this.isInitializing = true;
     try {
+      if (!fs.existsSync(this.cachePath)) {
+        fs.mkdirSync(this.cachePath, { recursive: true });
+      }
+
       console.log('Initializing OCR engine...');
       this.worker = await createWorker('eng', 1, {
+        cachePath: this.cachePath,
         errorHandler: (err) => console.error('OCR Worker Error:', err)
       });
       
@@ -46,6 +58,25 @@ export class OcrService {
         await this.worker.terminate();
       } catch (e) {}
       this.worker = null;
+    }
+    
+    // Cleanup cache files
+    try {
+      if (fs.existsSync(this.cachePath)) {
+        const files = fs.readdirSync(this.cachePath);
+        for (const file of files) {
+          fs.unlinkSync(path.join(this.cachePath, file));
+        }
+        fs.rmdirSync(this.cachePath);
+      }
+      
+      // Also cleanup eng.traineddata if it exists in root (leftover from previous versions)
+      const rootData = path.resolve(process.cwd(), 'eng.traineddata');
+      if (fs.existsSync(rootData)) {
+        fs.unlinkSync(rootData);
+      }
+    } catch (err) {
+      // Ignore cleanup errors
     }
   }
 

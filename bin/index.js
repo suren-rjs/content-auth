@@ -19,23 +19,35 @@ program
   .option('-t, --threads <number>', 'Number of concurrent requests', '5')
   .option('-i, --interact <selector>', 'CSS selector to click before searching (e.g. ".expand-btn")')
   .action(async (options) => {
+    const { url, content, output, threads, interact } = options;
+    
+    const crawler = new WebCrawler(parseInt(threads));
+    const searcher = new HtmlSearcher();
+    const exporter = new ExcelExporter();
+    const ocrService = new OcrService();
+    
+    const service = new CrawlAndSearchService(crawler, searcher, exporter, ocrService);
+    const controller = new AbortController();
+
+    // Handle Ctrl+C (SIGINT) to abort gracefully
+    process.on('SIGINT', () => {
+      console.log('\n[INTERRUPT] Received Ctrl+C. Aborting and saving results...');
+      controller.abort();
+    });
+
     try {
-      const { url, content, output, threads, interact } = options;
-      
-      const crawler = new WebCrawler(parseInt(threads));
-      const searcher = new HtmlSearcher();
-      const exporter = new ExcelExporter();
-      const ocrService = new OcrService(); // Always on
-      
-      const service = new CrawlAndSearchService(crawler, searcher, exporter, ocrService);
-      
       await service.execute(url, content, output, {
         interactionSelector: interact,
-        screenshots: true
+        screenshots: true,
+        signal: controller.signal
       });
     } catch (error) {
-      console.error('An error occurred:', error.message);
-      process.exit(1);
+      if (error.name === 'AbortError') {
+        // Handled in service.execute
+      } else {
+        console.error('An error occurred:', error.message);
+        process.exit(1);
+      }
     }
   });
 

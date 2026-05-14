@@ -1,6 +1,10 @@
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import pLimit from 'p-limit';
 import { ICrawler } from '../interfaces.js';
+
+// Apply stealth plugin to bypass bot detection
+puppeteer.use(StealthPlugin());
 
 export class WebCrawler extends ICrawler {
   constructor(concurrency = 5) {
@@ -14,14 +18,22 @@ export class WebCrawler extends ICrawler {
     if (!this.browser) {
       this.browser = await puppeteer.launch({
         headless: "new",
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+          '--no-sandbox', 
+          '--disable-setuid-sandbox',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-infobars',
+          '--window-size=1920,1080'
+        ]
       });
     }
   }
 
   async close() {
     if (this.browser) {
-      await this.browser.close();
+      try {
+        await this.browser.close();
+      } catch (e) {}
       this.browser = null;
     }
   }
@@ -122,8 +134,11 @@ export class WebCrawler extends ICrawler {
     await this.init();
     const origin = new URL(baseUrl).origin;
     const tasks = [];
+    const { signal } = options;
 
     const crawlPage = async (rawUrl) => {
+      if (signal?.aborted) return;
+      
       const url = this.normalizeUrl(rawUrl);
       if (this.visited.has(url)) return;
       this.visited.add(url);
@@ -138,6 +153,8 @@ export class WebCrawler extends ICrawler {
           timeout: 60000 
         });
 
+        if (signal?.aborted) return;
+
         const status = response ? response.status() : 'unknown';
         console.log(`Crawling: ${url} [Status: ${status}]`);
 
@@ -145,7 +162,25 @@ export class WebCrawler extends ICrawler {
           console.warn(`[WARN] Access denied (403) for ${url}. The site may be blocking the crawler.`);
         }
 
-        // Get rendered HTML
+        // --- Interaction Logic ---
+        if (options.interactionSelector) {
+          console.log(`  Performing interaction: clicking "${options.interactionSelector}" on ${url}...`);
+          try {
+            await page.waitForSelector(options.interactionSelector, { timeout: 10000 });
+            await page.click(options.interactionSelector);
+            
+            // Wait for potential content change or animation
+            await new Promise(r => setTimeout(r, 2000));
+            // Optional: wait for network to settle if new content was fetched
+            await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
+          } catch (e) {
+            console.warn(`  [WARN] Interaction failed on ${url}: ${e.message}`);
+          }
+        }
+
+        if (signal?.aborted) return;
+
+        // Get rendered HTML AFTER interaction
         const html = await page.content();
         
         // Extract background images via computed style
@@ -153,6 +188,8 @@ export class WebCrawler extends ICrawler {
         
         // Notify observer with both HTML, page object (for screenshots), and extra image URLs
         await onPageFound(url, html, { backgroundImages, page });
+
+        if (signal?.aborted) return;
 
         const links = await page.evaluate((origin) => {
           return Array.from(document.querySelectorAll('a[href]'))
@@ -169,14 +206,20 @@ export class WebCrawler extends ICrawler {
 
         for (const link of links) {
           const normalizedLink = this.normalizeUrl(link);
-          if (!this.visited.has(normalizedLink)) {
+          if (!this.visited.has(normalizedLink) && !signal?.aborted) {
             tasks.push(this.limit(() => crawlPage(normalizedLink)));
           }
         }
       } catch (error) {
-        console.error(`Failed to crawl ${url}: ${error.message}`);
+        if (!signal?.aborted) {
+          console.error(`Failed to crawl ${url}: ${error.message}`);
+        }
       } finally {
-        if (page) await page.close();
+        if (page) {
+          try {
+            await page.close();
+          } catch (e) {}
+        }
       }
     };
 
@@ -184,10 +227,14 @@ export class WebCrawler extends ICrawler {
 
     let i = 0;
     while (i < tasks.length) {
+      if (signal?.aborted) break;
       await tasks[i];
       i++;
     }
 
-    await this.close();
+    // Don't close browser here if aborted, let finalize handle it
+    if (!signal?.aborted) {
+      await this.close();
+    }
   }
 }

@@ -46,6 +46,12 @@ export class HtmlSearcher extends ISearcher {
     $('script, style, noscript').remove();
 
     // 3. Get the visible text content
+    // We add spaces after common block-level elements to prevent words from merging
+    // e.g. <div>word1</div><div>word2</div> -> "word1 word2" instead of "word1word2"
+    $('div, p, h1, h2, h3, h4, h5, h6, li, td, th, section, article, header, footer').each((_, el) => {
+      $(el).append(' ');
+    });
+    
     const visibleText = $('body').text() || $.text();
     
     // 4. Combine everything

@@ -130,13 +130,20 @@ export class WebCrawler extends ICrawler {
 
       let page;
       try {
-        console.log(`Crawling: ${url}`);
         page = await this.browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        await page.goto(url, { 
+        const response = await page.goto(url, { 
           waitUntil: 'networkidle2', 
           timeout: 60000 
         });
+
+        const status = response ? response.status() : 'unknown';
+        console.log(`Crawling: ${url} [Status: ${status}]`);
+
+        if (status === 403) {
+          console.warn(`[WARN] Access denied (403) for ${url}. The site may be blocking the crawler.`);
+        }
 
         // Get rendered HTML
         const html = await page.content();

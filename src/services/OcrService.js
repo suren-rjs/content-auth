@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import https from 'https';
 import { promisify } from 'util';
 
 const unlinkAsync = promisify(fs.unlink);
@@ -102,8 +103,12 @@ export class OcrService {
   }
 
   async downloadImage(url) {
+    const agent = new https.Agent({  
+      rejectUnauthorized: false
+    });
     const response = await axios.get(url, { 
       responseType: 'arraybuffer',
+      httpsAgent: agent,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }

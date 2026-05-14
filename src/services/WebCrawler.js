@@ -23,7 +23,8 @@ export class WebCrawler extends ICrawler {
           '--disable-setuid-sandbox',
           '--disable-blink-features=AutomationControlled',
           '--disable-infobars',
-          '--window-size=1920,1080'
+          '--window-size=1920,1080',
+          '--ignore-certificate-errors'
         ]
       });
     }

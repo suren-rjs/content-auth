@@ -398,9 +398,10 @@ async function scanVisibleText(page, term) {
 // SINGLE-URL SCRAPER
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function scrapePage(browser, targetUrl, searchTerm) {
+async function scrapePage(browser, targetUrl, searchTerm, ocrWorker) {
     const context = await browser.newContext({
         viewport: { width: 1920, height: 1080 },
+        deviceScaleFactor: 3,
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         ignoreHTTPSErrors: true,
     });
@@ -508,13 +509,28 @@ async function scrapePage(browser, targetUrl, searchTerm) {
         for (const img of imgs) {
             if (!(await img.isVisible().catch(() => false))) continue;
             try {
-                // Use the img element's own screenshot (just the image itself)
-                const imgBuf = await img.screenshot({ timeout: 5000 });
-                const { data: { text, confidence } } = await Tesseract.recognize(imgBuf, 'eng', {
-                    logger: () => { },       // silence Tesseract progress noise
+                // Apply filters to the element for better OCR contrast
+                await img.evaluate(el => {
+                    el._auditStyle = el.style.filter;
+                    el.style.filter = 'grayscale(100%) contrast(200%)';
                 });
-                // Confidence filter — skip garbage OCR results
-                if (confidence < 40) continue;
+
+                // Take a high-res screenshot of the image element
+                const imgBuf = await img.screenshot({ timeout: 5000 });
+
+                // Restore original style
+                await img.evaluate(el => {
+                    el.style.filter = el._auditStyle || '';
+                });
+
+                const { data: { text, confidence } } = await ocrWorker.recognize(imgBuf);
+
+                if (text && text.trim().length > 0) {
+                    // console.log(`      [OCR Debug] Found: "${text.trim().replace(/\n/g, ' ').slice(0, 50)}" (Conf: ${confidence})`);
+                }
+
+                // Confidence filter — high-res binarised images usually yield much higher confidence
+                if (confidence < 30) continue;
                 if (!text || !text.toLowerCase().includes(searchTerm.toLowerCase())) continue;
                 if (seenContent.has(normalise(text))) continue;
 
@@ -526,7 +542,9 @@ async function scrapePage(browser, targetUrl, searchTerm) {
                     content: `[OCR] ${text.trim()}`,
                     screenshot: buf,
                 })) ocrCount++;
-            } catch { /* skip unresponsive images */ }
+            } catch (err) {
+                // console.log(`      [OCR Error] ${err.message}`);
+            }
         }
         if (ocrCount) console.log(`    🖼  ${ocrCount} OCR hit(s)`);
 
@@ -567,13 +585,19 @@ async function runAllUrls(urls, searchTerm) {
 
     const browser = await chromium.launch({ headless: true });
 
+    // Initialise Tesseract worker pool / singleton
+    const ocrWorker = await Tesseract.createWorker('eng');
+    await ocrWorker.setParameters({
+        tessedit_pageseg_mode: '11', // Sparse text
+    });
+
     // Process in chunks of CONCURRENCY
     for (let i = 0; i < pending.length; i += CONFIG.CONCURRENCY) {
         const batch = pending.slice(i, i + CONFIG.CONCURRENCY);
         console.log(`\n── Batch ${Math.floor(i / CONFIG.CONCURRENCY) + 1} / ${Math.ceil(pending.length / CONFIG.CONCURRENCY)} ──`);
 
         const settled = await Promise.allSettled(
-            batch.map(url => scrapePage(browser, url, searchTerm))
+            batch.map(url => scrapePage(browser, url, searchTerm, ocrWorker))
         );
 
         for (const outcome of settled) {
@@ -589,6 +613,7 @@ async function runAllUrls(urls, searchTerm) {
         }
     }
 
+    await ocrWorker.terminate();
     await browser.close();
     return allResults;
 }
@@ -779,14 +804,14 @@ async function main(urls, searchTerm) {
 // ─── Configure your URLs and search term here ─────────────────────────────────
 
 const URLS = [
-    'https://medium.com/tag/javascript',
+    'https://www.creativecommunications.rrd.com/testing/newsletter-test/2026/GP-test/GP/index.html',
     // 'https://www.globalpayments.com/en-us/our-company/brands/heartland-payment-systems',
     //     'https://www.globalpayments.com/en-us/insights/everything-you-need-to-know-about-visas-surcharging-rules',
     //     'https://www.globalpayments.com/en-us/insights/dev-portal',
     //     'https://www.globalpayments.com/en-us/insights/authors/amy-double-trent',
 ];
 
-const SEARCH_TERM = 'react';
+const SEARCH_TERM = 'Software';
 
 main(URLS, SEARCH_TERM).catch(err => {
     console.error('\n💥 Fatal error:', err.message);

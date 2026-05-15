@@ -53,7 +53,7 @@ program
     const crawler = new WebCrawler(parseInt(threads));
     const searcher = new HtmlSearcher();
     const exporter = new ExcelExporter();
-    const ocrService = new OcrService();
+    const ocrService = new OcrService(parseInt(threads));
     
     const service = new CrawlAndSearchService(crawler, searcher, exporter, ocrService, dashboard);
     const controller = new AbortController();

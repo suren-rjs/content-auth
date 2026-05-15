@@ -36,6 +36,7 @@ export class CrawlAndSearchService {
   }
 
   saveCheckpoint() {
+    if (this.isFinalizing) return;
     try {
       const serialisable = {
         completedUrls: [...this.urlsProcessed],
@@ -53,7 +54,7 @@ export class CrawlAndSearchService {
     const urlList = Array.isArray(urls) ? urls : [urls];
     
     if (this.dashboard) {
-      this.dashboard.init(urlList.length);
+      this.dashboard.init(urlList.length, searchText);
     }
 
     this.loadCheckpoint();
@@ -73,10 +74,11 @@ export class CrawlAndSearchService {
         if (this.urlsProcessed.has(pageUrl)) return;
 
         const { page } = extra;
-        if (this.dashboard) {
-          this.dashboard.updateUrl(pageUrl);
-          this.dashboard.updateStatus('Scanning DOM...');
-        }
+        const setStatus = (status) => {
+          if (this.dashboard) this.dashboard.updateWorker(pageUrl, status);
+        };
+
+        setStatus('Scanning DOM...');
 
         // 1. Meta Tags / Page Title
         const metaHits = await this.searcher.scanMeta(page, searchText);
@@ -104,6 +106,7 @@ export class CrawlAndSearchService {
             
             let screenshot = null;
             if (screenshots && hit.auditId) {
+              setStatus(`Screenshot: ${hit.auditId}`);
               screenshot = await this.crawler.captureScreenshot(page, hit.auditId);
             }
             this.results.push({ ...hit, pageUrl, screenshot });
@@ -120,9 +123,7 @@ export class CrawlAndSearchService {
             for (let i = 0; i < imgs.length; i++) {
               if (signal?.aborted) break;
               
-              if (this.dashboard) {
-                this.dashboard.updateStatus(`OCR Image ${i + 1}/${imgs.length}`);
-              }
+              setStatus(`OCR ${i + 1}/${imgs.length}`);
 
               const img = imgs[i];
               try {
@@ -140,6 +141,7 @@ export class CrawlAndSearchService {
                   if (screenshots) {
                     const auditId = `ocr_${Math.random().toString(36).slice(2, 9)}`;
                     await page.evaluate((el, id) => el.setAttribute('data-audit-id', id), img, auditId);
+                    setStatus(`OCR Screenshot`);
                     screenshot = await this.crawler.captureScreenshot(page, auditId);
                   }
 
@@ -160,9 +162,16 @@ export class CrawlAndSearchService {
         this.urlsProcessed.add(pageUrl);
         if (this.dashboard) {
           this.dashboard.updateProgress(this.urlsProcessed.size);
+          this.dashboard.updateWorker(pageUrl, null); // Remove from active
         }
         this.saveCheckpoint();
-      }, { ...options, signal });
+      }, { 
+        ...options, 
+        signal,
+        onStatus: (url, status) => {
+          if (this.dashboard) this.dashboard.updateWorker(url, status);
+        }
+      });
 
     } catch (error) {
       if (!signal?.aborted) throw error;

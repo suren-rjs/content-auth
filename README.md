@@ -1,4 +1,4 @@
-# Content-Auth-Export (v1.2.0)
+# Content-Auth-Export (v1.3.0)
 
 A professional-grade, comprehensive Node.js CLI tool for auditing website content. It performs an exhaustive search for text strings across all layers of a site: visible UI text, hidden accessibility attributes, SEO metadata, and text embedded within all images (including SVGs and CSS backgrounds).
 
@@ -16,8 +16,13 @@ A professional-grade, comprehensive Node.js CLI tool for auditing website conten
   - **Rich Metadata**: Captures URL, Match Type, HTML Tag, and Matched Content.
 - **Deep Image Audit (OCR)**: 
   - Automatic detection of text in images, SVGs, and CSS backgrounds.
-  - **Confidence Filtering**: Implements confidence thresholds (min 40%) to eliminate false positives.
+  - **Multi-Worker Pool**: Uses a worker pool to process images in parallel across concurrent pages, eliminating processing bottlenecks.
+  - **Confidence Filtering**: Implements confidence thresholds to eliminate false positives.
   - **Multi-Pass Pre-processing**: Uses Sharp to maximize OCR accuracy across various image styles.
+- **Real-time Parallel Dashboard**:
+  - Monitors multiple concurrent workers simultaneously.
+  - Live status updates for each worker (e.g., "OCR", "Scanning DOM", "Scrolling").
+  - Tracks progress, matches, and elapsed time in a unified view.
 - **Crash Resilience**: Progress is auto-saved to `audit_checkpoint.json`. Long-running audits can be resumed seamlessly if interrupted.
 - **Performance & Stealth**: 
   - Uses Playwright/Puppeteer with a stealth plugin to bypass bot detection.

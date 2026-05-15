@@ -1,11 +1,12 @@
-import { createWorker } from 'tesseract.js';
+import { createWorker, createScheduler } from 'tesseract.js';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
 
 export class OcrService {
-  constructor() {
-    this.worker = null;
+  constructor(concurrency = 5) {
+    this.concurrency = concurrency;
+    this.scheduler = null;
     this.isInitializing = false;
     this.cachePath = path.resolve(process.cwd(), '.tesseract-cache');
     this.dashboard = null;
@@ -16,7 +17,7 @@ export class OcrService {
   }
 
   async init() {
-    if (this.worker) return;
+    if (this.scheduler) return;
     if (this.isInitializing) {
       while (this.isInitializing) {
         await new Promise(r => setTimeout(r, 100));
@@ -30,28 +31,37 @@ export class OcrService {
         fs.mkdirSync(this.cachePath, { recursive: true });
       }
 
-      this.worker = await createWorker('eng', 1, {
-        cachePath: this.cachePath,
-        logger: () => {} 
-      });
-
-      await this.worker.setParameters({
-        tessjs_create_hocr: '0',
-        tessjs_create_tsv: '0',
-      });
+      this.scheduler = createScheduler();
+      
+      const workers = [];
+      for (let i = 0; i < this.concurrency; i++) {
+        workers.push((async () => {
+          const worker = await createWorker('eng', 1, {
+            cachePath: this.cachePath,
+            logger: () => {} 
+          });
+          await worker.setParameters({
+            tessjs_create_hocr: '0',
+            tessjs_create_tsv: '0',
+          });
+          this.scheduler.addWorker(worker);
+        })());
+      }
+      
+      await Promise.all(workers);
     } catch (error) {
-      this.worker = null;
+      this.scheduler = null;
     } finally {
       this.isInitializing = false;
     }
   }
 
   async terminate() {
-    if (this.worker) {
+    if (this.scheduler) {
       try {
-        await this.worker.terminate();
+        await this.scheduler.terminate();
       } catch (e) {}
-      this.worker = null;
+      this.scheduler = null;
     }
   }
 
@@ -72,26 +82,31 @@ export class OcrService {
   }
 
   isFuzzyMatch(text, term) {
-    const t = text.toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
-    const s = term.toLowerCase().replace(/[^a-z0-9 ]/g, '');
+    if (!text || !term) return false;
     
+    const t = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const s = term.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // Direct substring match on cleaned text
     if (t.includes(s)) return true;
+    
+    // If term is very short, don't do fuzzy matching to avoid false positives
+    if (s.length < 3) return false;
 
     if (s.length > 4) {
-      const joinedT = t.replace(/\s+/g, '');
-      if (joinedT.includes(s)) return true;
-
-      const words = t.split(/\s+/);
+      const words = text.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, ''));
       for (const word of words) {
         if (word.length < 3) continue;
+        if (word.includes(s) || s.includes(word)) return true;
+
         const dist = this.levenshtein(word, s);
         
-        let limit = 0.35;
-        if (word[0] === s[0]) limit = 0.45;
-        if (word.endsWith('ware') || word.includes('ware')) limit = 0.55;
+        let limit = 0.3; // Stricter limit
+        if (word[0] === s[0]) limit = 0.4;
         
         const maxDist = Math.floor(s.length * limit);
         if (dist <= maxDist) {
+          // Special cases to avoid common mismatches
           if (s === 'hardware' && word === 'software') continue;
           if (s === 'software' && word === 'hardware') continue;
           return true;
@@ -106,7 +121,8 @@ export class OcrService {
       const metadata = await sharp(imageBuffer).metadata();
       let pipeline = sharp(imageBuffer).flatten({ background: '#ffffff' }); 
       
-      const targetWidth = Math.max(1200, (metadata.width || 0) * 3);
+      // Increased resolution for better detail
+      const targetWidth = Math.max(1600, (metadata.width || 0) * 4);
       pipeline = pipeline.resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 });
 
       switch (type) {
@@ -117,25 +133,22 @@ export class OcrService {
           pipeline = pipeline.grayscale().linear(3, -0.7).sharpen();
           break;
         case 't200':
-          pipeline = pipeline.grayscale().threshold(200);
+          pipeline = pipeline.grayscale().threshold(200).sharpen();
           break;
         case 't150':
-          pipeline = pipeline.grayscale().threshold(150);
+          pipeline = pipeline.grayscale().threshold(150).sharpen();
           break;
         case 't100':
-          pipeline = pipeline.grayscale().threshold(100);
-          break;
-        case 't80':
-          pipeline = pipeline.grayscale().threshold(80);
+          pipeline = pipeline.grayscale().threshold(100).sharpen();
           break;
         case 'inv':
-          pipeline = pipeline.grayscale().negate().normalize();
+          pipeline = pipeline.grayscale().negate().normalize().sharpen();
           break;
         case 'gray':
           pipeline = pipeline.grayscale().normalize().sharpen();
           break;
         default:
-          pipeline = pipeline.grayscale();
+          pipeline = pipeline.grayscale().sharpen();
       }
 
       return await pipeline.toBuffer();
@@ -147,50 +160,69 @@ export class OcrService {
   async searchInBuffer(imageBuffer, searchText) {
     try {
       await this.init();
-      if (!this.worker) return false;
+      if (!this.scheduler) return false;
 
       const metadata = await sharp(imageBuffer).metadata();
-      const targetWidth = Math.max(1200, (metadata.width || 0) * 3);
+      const targetWidth = Math.max(1600, (metadata.width || 0) * 4);
       
       const upscaledBase = await sharp(imageBuffer)
         .flatten({ background: '#ffffff' })
         .resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 })
         .toBuffer();
 
+      // Parallelize preprocessing to save time
+      const [bufT200, bufT150, bufT100, bufRed, bufInv, bufContrast, bufGray] = await Promise.all([
+        this.preprocessImage(imageBuffer, 't200'),
+        this.preprocessImage(imageBuffer, 't150'),
+        this.preprocessImage(imageBuffer, 't100'),
+        this.preprocessImage(imageBuffer, 'red'),
+        this.preprocessImage(imageBuffer, 'inv'),
+        this.preprocessImage(imageBuffer, 'contrast'),
+        this.preprocessImage(imageBuffer, 'gray')
+      ]);
+
       const passes = [
-        { name: 'flat', buf: upscaledBase, psm: '11' },
-        { name: 't200', buf: await this.preprocessImage(imageBuffer, 't200'), psm: '11' },
-        { name: 't150', buf: await this.preprocessImage(imageBuffer, 't150'), psm: '11' },
-        { name: 't100', buf: await this.preprocessImage(imageBuffer, 't100'), psm: '11' },
-        { name: 't80', buf: await this.preprocessImage(imageBuffer, 't80'), psm: '11' },
-        { name: 'red', buf: await this.preprocessImage(imageBuffer, 'red'), psm: '11' },
-        { name: 'inv', buf: await this.preprocessImage(imageBuffer, 'inv'), psm: '11' },
-        { name: 'contrast', buf: await this.preprocessImage(imageBuffer, 'contrast'), psm: '11' },
-        { name: 'gray', buf: await this.preprocessImage(imageBuffer, 'gray'), psm: '11' },
-        { name: 'auto', buf: upscaledBase, psm: '3' }
+        { name: 'std', buf: upscaledBase, psm: '3' },
+        { name: 'sparse', buf: upscaledBase, psm: '11' },
+        { name: 't200', buf: bufT200, psm: '11' },
+        { name: 't150', buf: bufT150, psm: '11' },
+        { name: 't100', buf: bufT100, psm: '11' },
+        { name: 'red', buf: bufRed, psm: '11' },
+        { name: 'inv', buf: bufInv, psm: '11' },
+        { name: 'contrast', buf: bufContrast, psm: '11' },
+        { name: 'gray', buf: bufGray, psm: '11' }
       ];
 
       const normalizedSearch = searchText.replace(/\s+/g, ' ').trim().toLowerCase();
-      let allText = '';
-
-      for (const pass of passes) {
-        if (this.dashboard) {
-          const currentStatus = this.dashboard.currentStatus;
-          this.dashboard.updateStatus(`${currentStatus} (${pass.name})`);
+      
+      // Run ALL OCR passes in parallel using the scheduler pool
+      const results = await Promise.all(passes.map(async (pass) => {
+        try {
+          const res = await this.scheduler.addJob('recognize', pass.buf, {
+            tessedit_pageseg_mode: pass.psm
+          });
+          return { ...res, name: pass.name };
+        } catch (e) {
+          return null;
         }
+      }));
 
-        await this.worker.setParameters({ tessedit_pageseg_mode: pass.psm });
-        const { data: { text, confidence } } = await this.worker.recognize(pass.buf);
-        if (!text) continue;
-
+      let allText = '';
+      for (const res of results) {
+        if (!res || !res.data || !res.data.text) continue;
+        const text = res.data.text;
+        const confidence = res.data.confidence;
+        
         const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
         allText += ' ' + normalizedText;
 
         if (this.isFuzzyMatch(normalizedText, normalizedSearch)) {
-          if (confidence > 3) return true; 
+          // If we found a match with reasonable confidence, return true
+          if (confidence > 15) return true; 
         }
       }
 
+      // Final check on aggregated text across all passes
       if (this.isFuzzyMatch(allText, normalizedSearch)) return true;
 
       return false;

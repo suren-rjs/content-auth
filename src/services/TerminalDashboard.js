@@ -4,8 +4,7 @@ export class TerminalDashboard {
   constructor() {
     this.totalUrls = 0;
     this.completedUrls = 0;
-    this.currentUrl = '';
-    this.currentStatus = 'Initializing...';
+    this.activeWorkers = new Map(); // url -> status
     this.counts = {
       meta: 0,
       attr: 0,
@@ -13,10 +12,12 @@ export class TerminalDashboard {
       ocr: 0
     };
     this.startTime = Date.now();
+    this.searchTerm = '';
   }
 
-  init(totalUrls) {
+  init(totalUrls, searchTerm = '') {
     this.totalUrls = totalUrls;
+    this.searchTerm = searchTerm;
     this.render();
   }
 
@@ -26,13 +27,19 @@ export class TerminalDashboard {
     this.render();
   }
 
-  updateUrl(url) {
-    this.currentUrl = url;
+  updateWorker(url, status) {
+    if (!url) return;
+    if (status === null) {
+      this.activeWorkers.delete(url);
+    } else {
+      this.activeWorkers.set(url, status);
+    }
     this.render();
   }
 
   updateStatus(status) {
-    this.currentStatus = status;
+    // Global status if needed, but we prefer worker-specific status now
+    this.globalStatus = status;
     this.render();
   }
 
@@ -61,7 +68,7 @@ export class TerminalDashboard {
   render() {
     const width = 30;
     const progress = this.totalUrls > 0 ? this.completedUrls / this.totalUrls : 0;
-    const filled = Math.round(width * progress);
+    const filled = Math.min(width, Math.max(0, Math.round(width * progress)));
     const empty = width - filled;
     const progressBar = `[${'#'.repeat(filled)}${'-'.repeat(empty)}]`;
     const percent = Math.round(progress * 100);
@@ -72,10 +79,26 @@ export class TerminalDashboard {
     readline.cursorTo(process.stdout, 0, 0);
     readline.clearScreenDown(process.stdout);
 
-    console.log(`\x1b[1m\x1b[36mWebsite Content Auditor\x1b[0m (v1.2.0)`);
+    console.log(`\x1b[1m\x1b[36mWebsite Content Auditor\x1b[0m (v1.3.0)`);
+    console.log(`Search  : \x1b[1m"${this.searchTerm}"\x1b[0m`);
     console.log(`Progress: ${progressBar} ${percent}% (${this.completedUrls}/${this.totalUrls} URLs)`);
-    console.log(`Current : \x1b[33m${this.truncate(this.currentUrl, 60)}\x1b[0m`);
-    console.log(`Status  : \x1b[32m${this.currentStatus}\x1b[0m`);
+    
+    // Show active workers
+    console.log(`\x1b[1mActive Tasks:\x1b[0m`);
+    const activeEntries = [...this.activeWorkers.entries()].slice(-5); // Show last 5
+    if (activeEntries.length === 0) {
+      console.log(`  (Waiting for tasks...)`);
+    } else {
+      for (const [url, status] of activeEntries) {
+        console.log(`  - \x1b[33m${this.truncate(url, 40)}\x1b[0m: \x1b[32m${status}\x1b[0m`);
+      }
+    }
+    
+    // Fill empty lines if less than 5 workers to keep UI stable
+    for (let i = activeEntries.length; i < 5; i++) {
+      console.log('');
+    }
+
     console.log(`Matches : \x1b[35m${this.counts.meta} Meta\x1b[0m, \x1b[35m${this.counts.attr} Attr\x1b[0m, \x1b[35m${this.counts.text} Text\x1b[0m, \x1b[35m${this.counts.ocr} OCR\x1b[0m`);
     console.log(`Time    : ${this.formatDuration(elapsed)} elapsed`);
     console.log('------------------------------------------------------------');

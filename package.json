@@ -1,6 +1,6 @@
 {
   "name": "content-auth-export",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Comprehensive website content auditor with automated screenshots and deep OCR capabilities.",
   "main": "src/services/CrawlAndSearchService.js",
   "type": "module",

@@ -178,6 +178,7 @@ export class WebCrawler extends ICrawler {
       let page;
       try {
         page = await this.browser.newPage();
+        if (options.onStatus) options.onStatus(url, 'Initializing...');
         await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 3 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         
@@ -193,15 +194,18 @@ export class WebCrawler extends ICrawler {
           timeout: 60000 
         });
 
+        if (options.onStatus) options.onStatus(url, 'Waiting for network...');
         await page.waitForNetworkIdle({ timeout: 15000 }).catch(() => {});
         
         // Trigger lazy loading
+        if (options.onStatus) options.onStatus(url, 'Scrolling...');
         await this.scrollToBottom(page);
 
         if (signal?.aborted) return;
 
         if (options.interactionSelector) {
           try {
+            if (options.onStatus) options.onStatus(url, 'Interacting...');
             await page.waitForSelector(options.interactionSelector, { timeout: 10000 });
             await page.click(options.interactionSelector);
             await new Promise(r => setTimeout(r, 2000));
@@ -214,7 +218,9 @@ export class WebCrawler extends ICrawler {
         const html = await page.content();
         const backgroundImages = await this.extractBackgroundImages(page);
         
+        if (options.onStatus) options.onStatus(url, 'Processing...');
         await onPageFound(url, html, { backgroundImages, page });
+        if (options.onStatus) options.onStatus(url, 'Cleaning up...');
 
         if (signal?.aborted || noFollow) return;
 
@@ -250,18 +256,25 @@ export class WebCrawler extends ICrawler {
     };
 
     // Add initial URLs to the task list
-    for (const startUrl of urls) {
+    const startTasks = urls.map(startUrl => {
       try {
         const origin = new URL(startUrl).origin;
-        tasks.push(this.limit(() => processPage(startUrl, origin)));
-      } catch (e) {}
-    }
+        return this.limit(() => processPage(startUrl, origin));
+      } catch (e) {
+        return Promise.resolve();
+      }
+    });
 
-    let i = 0;
-    while (i < tasks.length) {
-      if (signal?.aborted) break;
-      await tasks[i];
-      i++;
+    // Wait for all initial and discovered tasks to complete
+    await Promise.all(startTasks);
+
+    // If there were many discovered tasks, they might still be running in the background 
+    // but p-limit handles the queue. To be safe and ensure everything is finished:
+    while (tasks.length > 0) {
+      await Promise.all(tasks);
+      // If processPage added more tasks during the previous await, we loop again
+      // Clear tasks that are already started/finished
+      tasks.length = 0; 
     }
 
     if (!signal?.aborted) {

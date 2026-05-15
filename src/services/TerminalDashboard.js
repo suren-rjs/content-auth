@@ -8,6 +8,7 @@ export class TerminalDashboard {
     this.currentStatus = 'Initializing...';
     this.counts = {
       meta: 0,
+      attr: 0,
       text: 0,
       ocr: 0
     };
@@ -42,6 +43,21 @@ export class TerminalDashboard {
     }
   }
 
+  formatDuration(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0) parts.push(`${hours}h`);
+    if (mins > 0) parts.push(`${mins}m`);
+    parts.push(`${secs}s`);
+
+    return parts.join(' ');
+  }
+
   render() {
     const width = 30;
     const progress = this.totalUrls > 0 ? this.completedUrls / this.totalUrls : 0;
@@ -60,8 +76,8 @@ export class TerminalDashboard {
     console.log(`Progress: ${progressBar} ${percent}% (${this.completedUrls}/${this.totalUrls} URLs)`);
     console.log(`Current : \x1b[33m${this.truncate(this.currentUrl, 60)}\x1b[0m`);
     console.log(`Status  : \x1b[32m${this.currentStatus}\x1b[0m`);
-    console.log(`Matches : \x1b[35m${this.counts.meta} Meta\x1b[0m, \x1b[35m${this.counts.text} Text\x1b[0m, \x1b[35m${this.counts.ocr} OCR\x1b[0m`);
-    console.log(`Time    : ${elapsed}s elapsed`);
+    console.log(`Matches : \x1b[35m${this.counts.meta} Meta\x1b[0m, \x1b[35m${this.counts.attr} Attr\x1b[0m, \x1b[35m${this.counts.text} Text\x1b[0m, \x1b[35m${this.counts.ocr} OCR\x1b[0m`);
+    console.log(`Time    : ${this.formatDuration(elapsed)} elapsed`);
     console.log('------------------------------------------------------------');
   }
 

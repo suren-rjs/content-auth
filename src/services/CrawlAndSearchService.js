@@ -78,7 +78,7 @@ export class CrawlAndSearchService {
           this.dashboard.updateStatus('Scanning DOM...');
         }
 
-        // 1. Meta Tags
+        // 1. Meta Tags / Page Title
         const metaHits = await this.searcher.scanMeta(page, searchText);
         if (metaHits.length) {
           this.results.push(...metaHits.map(h => ({ ...h, pageUrl })));
@@ -91,12 +91,12 @@ export class CrawlAndSearchService {
         const attrHits = await this.searcher.scanAttributes(page, searchText);
         if (attrHits.length) {
           this.results.push(...attrHits.map(h => ({ ...h, pageUrl })));
-          if (this.dashboard) this.dashboard.incrementCount('meta', attrHits.length); // Count attributes as meta for simplicity
+          if (this.dashboard) this.dashboard.incrementCount('attr', attrHits.length);
         }
 
         if (signal?.aborted) return;
 
-        // 3. Visible Text
+        // 3. Visible Text / SVG
         const textHits = await this.searcher.scanVisibleText(page, searchText);
         if (textHits.length) {
           for (const hit of textHits) {

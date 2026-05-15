@@ -1,11 +1,11 @@
 {
   "name": "content-auth-export",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Comprehensive website content auditor with automated screenshots and deep OCR capabilities.",
   "main": "src/services/CrawlAndSearchService.js",
   "type": "module",
   "bin": {
-    "content-auth": "bin/index.js"
+    "content-audit": "bin/index.js"
   },
   "files": [
     "bin",

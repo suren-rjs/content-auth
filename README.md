@@ -1,28 +1,28 @@
-# Content-Auth-Export (v1.1.0)
+# Content-Auth-Export (v1.2.0)
 
 A professional-grade, comprehensive Node.js CLI tool for auditing website content. It performs an exhaustive search for text strings across all layers of a site: visible UI text, hidden accessibility attributes, SEO metadata, and text embedded within all images (including SVGs and CSS backgrounds).
 
 ## Key Features
 
-- **Comprehensive DOM Auditing**: Automatically extracts and searches text from:
-  - Visible page content.
-  - Hidden accessibility attributes: `alt`, `title`, `aria-label`, and `placeholder`.
-  - SEO & Social Metadata: `<title>`, `<meta name="description">`, Open Graph (`og:`), and Twitter tags.
-  - Form UI: Button values and input placeholders.
-- **Visual Evidence (Automatic Screenshots)**: For every match found, the tool automatically:
-  - Highlights the matching element with a red border and yellow background.
-  - Scrolls the match into view.
-  - Captures a high-resolution screenshot.
-- **Embedded Excel Reporting**: Screenshots are embedded directly into the exported `.xlsx` report for instant verification.
-- **Deep Image Audit (Always-On OCR)**: No flags required. The tool automatically reads text inside:
-  - Standard `<img>` tags and modern `<picture>`/`<source>` elements.
-  - **Vector Graphics (SVGs)**: Automatically rasterized and processed.
-  - **CSS Background Images**: Discovered via computed styles using Puppeteer.
-- **Advanced OCR Engine**: Powered by **Tesseract.js** with **Sharp** pre-processing:
-  - **Multi-Pass Analysis**: Each image is processed through 5 different filters (Grayscale, High-Contrast, Threshold, Inverted) to maximize detection of stylized or artistic fonts.
-  - **Fuzzy Matching**: Uses a 75% word-match heuristic to handle minor OCR misreads while maintaining high precision.
-- **Dynamic Content Support**: Uses **Puppeteer** to handle JavaScript-rendered sites (SPAs) and waits for `networkidle2` to ensure all data-driven content is loaded.
-- **Granular Mapping**: Maps every match to its exact source (e.g., "Page HTML / Attributes" or the specific Image URL).
+- **Bulk Load Support**: Audit multiple URLs provided via command line or loaded from a text file.
+- **Leaf-Match Strategy**: Advanced DOM scanning that identifies the deepest elements containing the search term, preventing redundant ancestor matches.
+- **Visual Proof (Red-Border Screenshots)**: 
+  - Automatically highlights matched elements with a precise **3px red border overlay**.
+  - Captures high-resolution, viewport-accurate screenshots.
+  - Supports multiple instances of the same word on a single page, each with its own screenshot.
+- **Professional Reporting**: Generates an enhanced `.xlsx` report with:
+  - **Summary Sheet**: Dashboard overview of all URLs, match counts, and status.
+  - **Per-URL Sheets**: Dedicated tabs for each URL with detailed evidence and embedded screenshots.
+  - **Rich Metadata**: Captures URL, Match Type, HTML Tag, and Matched Content.
+- **Deep Image Audit (OCR)**: 
+  - Automatic detection of text in images, SVGs, and CSS backgrounds.
+  - **Confidence Filtering**: Implements confidence thresholds (min 40%) to eliminate false positives.
+  - **Multi-Pass Pre-processing**: Uses Sharp to maximize OCR accuracy across various image styles.
+- **Crash Resilience**: Progress is auto-saved to `audit_checkpoint.json`. Long-running audits can be resumed seamlessly if interrupted.
+- **Performance & Stealth**: 
+  - Uses Playwright/Puppeteer with a stealth plugin to bypass bot detection.
+  - Configurable concurrency for fast batch processing.
+  - Resource interception to block unnecessary assets (fonts, media) for faster loads.
 
 ## Installation
 
@@ -31,38 +31,63 @@ A professional-grade, comprehensive Node.js CLI tool for auditing website conten
    ```bash
    npm install
    ```
-3. (Optional) Link the command globally:
+3. Link the command globally:
    ```bash
    npm link
    ```
+   Now you can use the `content-audit` command from anywhere.
 
 ## Usage
 
+### Audit a single URL
 ```bash
-node bin/index.js --url https://example.com --content "Search Text" --output audit-results.xlsx
+content-audit -u https://example.com -c "Search Text"
+```
+
+### Audit multiple URLs from a file
+```bash
+content-audit -f urls.txt -c "Search Text" -o report.xlsx
 ```
 
 ### Options
-- `-u, --url <url>`: **(Required)** The base URL to start crawling from.
+- `-u, --url <url>`: Single URL to audit.
+- `-f, --file <path>`: Text file containing list of URLs to audit (one per line).
 - `-c, --content <content>`: **(Required)** The text content to search for.
 - `-o, --output <path>`: Output Excel file path (default: `results.xlsx`).
-- `-t, --threads <number>`: Number of concurrent requests (default: `5`).
+- `-t, --threads <number>`: Number of concurrent browser instances (default: `5`).
+- `-i, --interact <selector>`: CSS selector to click (e.g., cookie banner, "Read More") before searching.
 
 ## Examples
 
-### Audit a site for brand consistency with visual proof
+### Bulk audit from a text file
 ```bash
-node bin/index.js -u https://yoursite.com -c "Brand Name"
+# Create a urls.txt
+# https://site1.com
+# https://site2.com/page
+
+content-audit -f urls.txt -c "Confidential" -o audit-report.xlsx
+```
+
+### Handling Interactive Pages
+```bash
+content-audit -u https://yoursite.com -c "Success" -i ".expand-button"
+```
+
+### Using with node directly
+If you haven't linked the package, you can still run:
+```bash
+node bin/index.js -u https://example.com -c "Search Text"
 ```
 
 ## Architecture
 
 The project follows a SOLID modular structure for high maintainability:
-- `src/interfaces.js`: Abstractions for core services.
-- `src/services/HtmlSearcher.js`: Logic for comprehensive DOM auditing (Attributes, Meta, Text).
-- `src/services/OcrService.js`: Advanced multi-pass image-to-text conversion.
-- `src/services/WebCrawler.js`: Headless browser-based crawler with CSS background extraction and visual capture.
-- `src/services/CrawlAndSearchService.js`: Orchestrator for the unified search workflow.
+- `src/interfaces.js`: Service contracts and type definitions.
+- `src/services/HtmlSearcher.js`: Leaf-match DOM auditing (Attributes, Meta, Visible Text).
+- `src/services/OcrService.js`: Multi-pass OCR analysis with confidence filtering.
+- `src/services/WebCrawler.js`: Headless browser-based auditor with stealth support and visual capture.
+- `src/services/ExcelExporter.js`: Multi-sheet, styled Excel report generator.
+- `src/services/CrawlAndSearchService.js`: Orchestrator with checkpointing and bulk URL support.
 
 ## License
 ISC

@@ -40,24 +40,18 @@ export class WebCrawler extends ICrawler {
   }
 
   /**
-   * Normalizes a URL to prevent duplicate crawling of functionally identical pages.
-   * Strips trailing slashes and common index filenames (index.html, index.php, etc.).
-   * @param {string} urlString - The URL to normalize.
-   * @returns {string} - The normalized URL.
+   * Normalizes a URL.
    */
   normalizeUrl(urlString) {
     try {
       const url = new URL(urlString);
-      url.hash = ''; // Hashes never change the page content for a search
+      url.hash = ''; 
       
       let pathname = url.pathname;
-      
-      // 1. Consistency: remove trailing slash (except for root '/')
       if (pathname.length > 1 && pathname.endsWith('/')) {
         pathname = pathname.slice(0, -1);
       }
       
-      // 2. Remove common default document names
       const indexFiles = ['/index.html', '/index.htm', '/index.php', '/index.asp', '/default.aspx', '/home'];
       const lowerPath = pathname.toLowerCase();
       
@@ -68,9 +62,7 @@ export class WebCrawler extends ICrawler {
         }
       }
       
-      // Ensure we don't end up with an empty string for the pathname
       url.pathname = pathname || '/';
-      
       return url.toString().replace(/\/$/, '') || url.origin + '/';
     } catch (e) {
       return urlString;
@@ -78,8 +70,57 @@ export class WebCrawler extends ICrawler {
   }
 
   /**
-   * Extracts background images using Puppeteer.
+   * Clears audit overlays from the page.
    */
+  async clearOverlays(page) {
+    await page.evaluate(() => {
+      document.querySelectorAll('.__audit_ov__').forEach(e => e.remove());
+    }).catch(() => {});
+  }
+
+  /**
+   * Highlights an element and takes a screenshot.
+   */
+  async captureScreenshot(page, auditId) {
+    try {
+      await this.clearOverlays(page);
+      const el = await page.$(`[data-audit-id="${auditId}"]`);
+      if (!el) return null;
+
+      await el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+      await new Promise(r => setTimeout(r, 300)); 
+
+      const box = await el.boundingBox();
+      if (!box || box.width === 0 || box.height === 0) return null;
+
+      await page.evaluate((id) => {
+        const node = document.querySelector(`[data-audit-id="${id}"]`);
+        if (!node) return;
+        const r = node.getBoundingClientRect();
+        const ov = document.createElement('div');
+        ov.className = '__audit_ov__';
+        ov.style.position = 'fixed';
+        ov.style.top = r.top + 'px';
+        ov.style.left = r.left + 'px';
+        ov.style.width = r.width + 'px';
+        ov.style.height = r.height + 'px';
+        ov.style.outline = '3px solid #FF0000';
+        ov.style.outlineOffset = '-1px';
+        ov.style.pointerEvents = 'none';
+        ov.style.zIndex = '2147483647';
+        ov.style.boxSizing = 'border-box';
+        document.body.appendChild(ov);
+      }, auditId);
+
+      const buf = await page.screenshot({ fullPage: false });
+      await this.clearOverlays(page);
+      return buf;
+    } catch (error) {
+      await this.clearOverlays(page).catch(() => {});
+      return null;
+    }
+  }
+
   async extractBackgroundImages(page) {
     return await page.evaluate(() => {
       const urls = [];
@@ -96,48 +137,38 @@ export class WebCrawler extends ICrawler {
   }
 
   /**
-   * Highlights text on the page and takes a screenshot.
-   * @param {Object} page - Puppeteer page object.
-   * @param {string} searchText - Text to highlight.
-   * @returns {Promise<Buffer>} - Screenshot buffer.
+   * Scrolls the page to the bottom to trigger lazy loading.
    */
-  async captureScreenshot(page, searchText) {
-    try {
-      await page.evaluate((text) => {
-        // Simple search and highlight logic
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-        let node;
-        const matches = [];
-        while (node = walker.nextNode()) {
-          if (node.textContent.toLowerCase().includes(text.toLowerCase())) {
-            matches.push(node.parentElement);
+  async scrollToBottom(page) {
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        let distance = 100;
+        let timer = setInterval(() => {
+          let scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            resolve();
           }
-        }
-
-        matches.forEach(el => {
-          el.style.outline = '5px solid red';
-          el.style.backgroundColor = 'yellow';
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        });
-      }, searchText);
-
-      // Wait a bit for scroll and rendering
-      await new Promise(r => setTimeout(r, 500));
-
-      return await page.screenshot({ fullPage: false });
-    } catch (error) {
-      console.error(`Failed to capture screenshot: ${error.message}`);
-      return null;
-    }
+        }, 100);
+      });
+    });
+    // Wait a bit for images to load after scroll
+    await new Promise(r => setTimeout(r, 2000));
   }
 
-  async crawl(baseUrl, onPageFound, options = {}) {
+  /**
+   * Processes a list of URLs and optionally follows links.
+   */
+  async crawl(baseUrlOrList, onPageFound, options = {}) {
     await this.init();
-    const origin = new URL(baseUrl).origin;
+    const urls = Array.isArray(baseUrlOrList) ? baseUrlOrList : [baseUrlOrList];
+    const { signal, noFollow = false } = options;
     const tasks = [];
-    const { signal } = options;
 
-    const crawlPage = async (rawUrl) => {
+    const processPage = async (rawUrl, baseOrigin) => {
       if (signal?.aborted) return;
       
       const url = this.normalizeUrl(rawUrl);
@@ -147,51 +178,47 @@ export class WebCrawler extends ICrawler {
       let page;
       try {
         page = await this.browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 3 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+          const type = req.resourceType();
+          if (['font', 'media', 'websocket'].includes(type)) return req.abort();
+          return req.continue();
+        });
+
         const response = await page.goto(url, { 
-          waitUntil: 'networkidle2', 
+          waitUntil: 'domcontentloaded', 
           timeout: 60000 
         });
 
+        await page.waitForNetworkIdle({ timeout: 15000 }).catch(() => {});
+        
+        // Trigger lazy loading
+        await this.scrollToBottom(page);
+
         if (signal?.aborted) return;
 
-        const status = response ? response.status() : 'unknown';
-        console.log(`Crawling: ${url} [Status: ${status}]`);
-
-        if (status === 403) {
-          console.warn(`[WARN] Access denied (403) for ${url}. The site may be blocking the crawler.`);
-        }
-
-        // --- Interaction Logic ---
         if (options.interactionSelector) {
-          console.log(`  Performing interaction: clicking "${options.interactionSelector}" on ${url}...`);
           try {
             await page.waitForSelector(options.interactionSelector, { timeout: 10000 });
             await page.click(options.interactionSelector);
-            
-            // Wait for potential content change or animation
             await new Promise(r => setTimeout(r, 2000));
-            // Optional: wait for network to settle if new content was fetched
             await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
-          } catch (e) {
-            console.warn(`  [WARN] Interaction failed on ${url}: ${e.message}`);
-          }
+          } catch (e) {}
         }
 
         if (signal?.aborted) return;
 
-        // Get rendered HTML AFTER interaction
         const html = await page.content();
-        
-        // Extract background images via computed style
         const backgroundImages = await this.extractBackgroundImages(page);
         
-        // Notify observer with both HTML, page object (for screenshots), and extra image URLs
         await onPageFound(url, html, { backgroundImages, page });
 
-        if (signal?.aborted) return;
+        if (signal?.aborted || noFollow) return;
 
+        // If following links, extract them from the current page
         const links = await page.evaluate((origin) => {
           return Array.from(document.querySelectorAll('a[href]'))
             .map(a => a.href)
@@ -203,18 +230,16 @@ export class WebCrawler extends ICrawler {
                 return false;
               }
             });
-        }, origin);
+        }, baseOrigin);
 
         for (const link of links) {
           const normalizedLink = this.normalizeUrl(link);
           if (!this.visited.has(normalizedLink) && !signal?.aborted) {
-            tasks.push(this.limit(() => crawlPage(normalizedLink)));
+            tasks.push(this.limit(() => processPage(normalizedLink, baseOrigin)));
           }
         }
       } catch (error) {
-        if (!signal?.aborted) {
-          console.error(`Failed to crawl ${url}: ${error.message}`);
-        }
+        // Silently fail for dashboard consistency, or could log to a file
       } finally {
         if (page) {
           try {
@@ -224,7 +249,13 @@ export class WebCrawler extends ICrawler {
       }
     };
 
-    tasks.push(this.limit(() => crawlPage(baseUrl)));
+    // Add initial URLs to the task list
+    for (const startUrl of urls) {
+      try {
+        const origin = new URL(startUrl).origin;
+        tasks.push(this.limit(() => processPage(startUrl, origin)));
+      } catch (e) {}
+    }
 
     let i = 0;
     while (i < tasks.length) {
@@ -233,7 +264,6 @@ export class WebCrawler extends ICrawler {
       i++;
     }
 
-    // Don't close browser here if aborted, let finalize handle it
     if (!signal?.aborted) {
       await this.close();
     }

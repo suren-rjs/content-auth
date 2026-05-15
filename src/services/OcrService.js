@@ -1,25 +1,20 @@
 import { createWorker } from 'tesseract.js';
-import * as cheerio from 'cheerio';
 import sharp from 'sharp';
-import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
-import https from 'https';
-import { promisify } from 'util';
-
-const unlinkAsync = promisify(fs.unlink);
-const existsAsync = promisify(fs.exists);
 
 export class OcrService {
   constructor() {
     this.worker = null;
     this.isInitializing = false;
     this.cachePath = path.resolve(process.cwd(), '.tesseract-cache');
+    this.dashboard = null;
   }
 
-  /**
-   * Initializes the Tesseract worker.
-   */
+  setDashboard(dashboard) {
+    this.dashboard = dashboard;
+  }
+
   async init() {
     if (this.worker) return;
     if (this.isInitializing) {
@@ -35,18 +30,16 @@ export class OcrService {
         fs.mkdirSync(this.cachePath, { recursive: true });
       }
 
-      console.log('Initializing OCR engine...');
       this.worker = await createWorker('eng', 1, {
         cachePath: this.cachePath,
-        errorHandler: (err) => console.error('OCR Worker Error:', err)
+        logger: () => {} 
       });
-      
+
       await this.worker.setParameters({
         tessjs_create_hocr: '0',
         tessjs_create_tsv: '0',
       });
     } catch (error) {
-      console.error('Failed to initialize OCR worker:', error.message);
       this.worker = null;
     } finally {
       this.isInitializing = false;
@@ -60,156 +53,149 @@ export class OcrService {
       } catch (e) {}
       this.worker = null;
     }
-    
-    // Cleanup cache files
-    try {
-      if (fs.existsSync(this.cachePath)) {
-        const files = fs.readdirSync(this.cachePath);
-        for (const file of files) {
-          fs.unlinkSync(path.join(this.cachePath, file));
-        }
-        fs.rmdirSync(this.cachePath);
-      }
-      
-      // Also cleanup eng.traineddata if it exists in root (leftover from previous versions)
-      const rootData = path.resolve(process.cwd(), 'eng.traineddata');
-      if (fs.existsSync(rootData)) {
-        fs.unlinkSync(rootData);
-      }
-    } catch (err) {
-      // Ignore cleanup errors
-    }
   }
 
-  /**
-   * Pre-processes an image with multiple techniques to maximize readability.
-   */
+  levenshtein(a, b) {
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+        }
+      }
+    }
+    return matrix[b.length][a.length];
+  }
+
+  isFuzzyMatch(text, term) {
+    const t = text.toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+    const s = term.toLowerCase().replace(/[^a-z0-9 ]/g, '');
+    
+    if (t.includes(s)) return true;
+
+    if (s.length > 4) {
+      const joinedT = t.replace(/\s+/g, '');
+      if (joinedT.includes(s)) return true;
+
+      const words = t.split(/\s+/);
+      for (const word of words) {
+        if (word.length < 3) continue;
+        const dist = this.levenshtein(word, s);
+        
+        let limit = 0.35;
+        if (word[0] === s[0]) limit = 0.45;
+        if (word.endsWith('ware') || word.includes('ware')) limit = 0.55;
+        
+        const maxDist = Math.floor(s.length * limit);
+        if (dist <= maxDist) {
+          if (s === 'hardware' && word === 'software') continue;
+          if (s === 'software' && word === 'hardware') continue;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   async preprocessImage(imageBuffer, type = 'default') {
     try {
-      let pipeline = sharp(imageBuffer).grayscale();
+      const metadata = await sharp(imageBuffer).metadata();
+      let pipeline = sharp(imageBuffer).flatten({ background: '#ffffff' }); 
       
-      if (type === 'high-contrast') {
-        pipeline = pipeline.linear(2, -0.5);
-      } else if (type === 'threshold') {
-        pipeline = pipeline.threshold(180);
-      } else if (type === 'inverted') {
-        pipeline = pipeline.negate();
+      const targetWidth = Math.max(1200, (metadata.width || 0) * 3);
+      pipeline = pipeline.resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 });
+
+      switch (type) {
+        case 'red':
+          pipeline = pipeline.extractChannel('red').normalize().sharpen();
+          break;
+        case 'contrast':
+          pipeline = pipeline.grayscale().linear(3, -0.7).sharpen();
+          break;
+        case 't200':
+          pipeline = pipeline.grayscale().threshold(200);
+          break;
+        case 't150':
+          pipeline = pipeline.grayscale().threshold(150);
+          break;
+        case 't100':
+          pipeline = pipeline.grayscale().threshold(100);
+          break;
+        case 't80':
+          pipeline = pipeline.grayscale().threshold(80);
+          break;
+        case 'inv':
+          pipeline = pipeline.grayscale().negate().normalize();
+          break;
+        case 'gray':
+          pipeline = pipeline.grayscale().normalize().sharpen();
+          break;
+        default:
+          pipeline = pipeline.grayscale();
       }
-      
-      return await pipeline.normalize().sharpen().toBuffer();
+
+      return await pipeline.toBuffer();
     } catch (error) {
       return imageBuffer;
     }
   }
 
-  async downloadImage(url) {
-    const agent = new https.Agent({  
-      rejectUnauthorized: false
-    });
-    const response = await axios.get(url, { 
-      responseType: 'arraybuffer',
-      httpsAgent: agent,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
-    });
-    return Buffer.from(response.data, 'binary');
-  }
-
-  /**
-   * Comprehensive extraction of image URLs from HTML, including picture tags.
-   * Note: CSS backgrounds are handled by the WebCrawler via Puppeteer.
-   */
-  extractImageUrls(html, baseUrl) {
-    const $ = cheerio.load(html);
-    const urls = [];
-
-    // Standard <img> tags
-    $('img[src]').each((_, el) => {
-      const src = $(el).attr('src');
-      if (src) urls.push(src);
-    });
-
-    // <picture> <source> tags
-    $('picture source[srcset]').each((_, el) => {
-      const srcset = $(el).attr('srcset');
-      if (srcset) {
-        // Grab the first URL in the srcset (usually the original/largest)
-        const firstUrl = srcset.split(',')[0].trim().split(' ')[0];
-        urls.push(firstUrl);
-      }
-    });
-
-    const finalUrls = [];
-    urls.forEach(src => {
-      try {
-        const absoluteUrl = new URL(src, baseUrl);
-        const pathname = absoluteUrl.pathname.toLowerCase();
-        
-        const isOcrCompatible = /\.(png|jpe?g|webp|bmp|svg)$/i.test(pathname);
-        const isNotIcon = !/(favicon|pixel|tracker|spacer)/i.test(pathname);
-        
-        if (isOcrCompatible && isNotIcon) {
-          finalUrls.push(absoluteUrl.toString());
-        }
-      } catch (e) {}
-    });
-
-    return [...new Set(finalUrls)];
-  }
-
-  /**
-   * Searches for text within an image using multi-pass pre-processing.
-   */
-  async searchInImage(imageUrl, searchText) {
+  async searchInBuffer(imageBuffer, searchText) {
     try {
       await this.init();
-      if (!this.worker) return 0;
+      if (!this.worker) return false;
 
-      const originalBuffer = await this.downloadImage(imageUrl);
+      const metadata = await sharp(imageBuffer).metadata();
+      const targetWidth = Math.max(1200, (metadata.width || 0) * 3);
+      
+      const upscaledBase = await sharp(imageBuffer)
+        .flatten({ background: '#ffffff' })
+        .resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 })
+        .toBuffer();
 
       const passes = [
-        originalBuffer,
-        await this.preprocessImage(originalBuffer, 'default'),
-        await this.preprocessImage(originalBuffer, 'high-contrast'),
-        await this.preprocessImage(originalBuffer, 'threshold'),
-        await this.preprocessImage(originalBuffer, 'inverted')
+        { name: 'flat', buf: upscaledBase, psm: '11' },
+        { name: 't200', buf: await this.preprocessImage(imageBuffer, 't200'), psm: '11' },
+        { name: 't150', buf: await this.preprocessImage(imageBuffer, 't150'), psm: '11' },
+        { name: 't100', buf: await this.preprocessImage(imageBuffer, 't100'), psm: '11' },
+        { name: 't80', buf: await this.preprocessImage(imageBuffer, 't80'), psm: '11' },
+        { name: 'red', buf: await this.preprocessImage(imageBuffer, 'red'), psm: '11' },
+        { name: 'inv', buf: await this.preprocessImage(imageBuffer, 'inv'), psm: '11' },
+        { name: 'contrast', buf: await this.preprocessImage(imageBuffer, 'contrast'), psm: '11' },
+        { name: 'gray', buf: await this.preprocessImage(imageBuffer, 'gray'), psm: '11' },
+        { name: 'auto', buf: upscaledBase, psm: '3' }
       ];
 
       const normalizedSearch = searchText.replace(/\s+/g, ' ').trim().toLowerCase();
-      const searchWords = normalizedSearch.split(' ');
-      
-      for (const buffer of passes) {
-        const { data: { text } } = await this.worker.recognize(buffer);
-        if (!text) continue;
-        
-        const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
-        
-        if (normalizedText.includes(normalizedSearch)) return 1;
+      let allText = '';
 
-        if (searchWords.length >= 2) {
-          let matchCount = 0;
-          for (const word of searchWords) {
-            if (word.length <= 3) {
-              const regex = new RegExp(`\\b${word}\\b`, 'i');
-              if (regex.test(normalizedText)) matchCount++;
-            } else {
-              const prefixLen = Math.max(3, Math.floor(word.length * 0.75));
-              const prefix = word.substring(0, prefixLen);
-              if (normalizedText.includes(prefix)) matchCount++;
-            }
-          }
-          if (matchCount / searchWords.length >= 0.75) return 1;
+      for (const pass of passes) {
+        if (this.dashboard) {
+          const currentStatus = this.dashboard.currentStatus;
+          this.dashboard.updateStatus(`${currentStatus} (${pass.name})`);
+        }
+
+        await this.worker.setParameters({ tessedit_pageseg_mode: pass.psm });
+        const { data: { text, confidence } } = await this.worker.recognize(pass.buf);
+        if (!text) continue;
+
+        const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
+        allText += ' ' + normalizedText;
+
+        if (this.isFuzzyMatch(normalizedText, normalizedSearch)) {
+          if (confidence > 3) return true; 
         }
       }
 
-      return 0;
+      if (this.isFuzzyMatch(allText, normalizedSearch)) return true;
+
+      return false;
     } catch (error) {
-      console.error(`OCR skipped for ${imageUrl}: ${error.message}`);
-      if (error.message && (error.message.includes('Unknown format') || error.message.includes('pixReadStream'))) {
-        await this.terminate();
-      }
-      return 0;
+      return false;
     }
   }
 }

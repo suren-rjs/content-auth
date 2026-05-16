@@ -116,45 +116,84 @@ export class CrawlAndSearchService {
 
         if (signal?.aborted) return;
 
-        // 4. OCR
+        // 4. OCR & Visual Audit (Expanded to handle BG images, SVGs, etc.)
         if (this.ocrService && page) {
-          const imgs = await page.$$('img');
-          if (imgs.length > 0) {
-            for (let i = 0; i < imgs.length; i++) {
+          const visualCandidates = await page.evaluate(() => {
+            const candidates = [];
+            let counter = 0;
+
+            // Helper to mark and add candidate
+            const addCandidate = (el, type, src) => {
+              const id = `vis_${++counter}`;
+              el.setAttribute('data-audit-id', id);
+              candidates.push({ id, type, src });
+            };
+
+            // 1. img tags
+            document.querySelectorAll('img').forEach(el => {
+              addCandidate(el, '<img>', el.src || 'src-unknown');
+            });
+
+            // 2. Background images
+            document.querySelectorAll('*').forEach(el => {
+              // Skip if it's already an <img> we processed
+              if (el.tagName === 'IMG') return;
+              
+              const style = window.getComputedStyle(el);
+              const bg = style.backgroundImage;
+              if (bg && bg !== 'none' && bg.startsWith('url(')) {
+                const src = bg.match(/url\(["']?([^"']+)["']?\)/)?.[1] || 'css-url';
+                addCandidate(el, 'BG Image', src);
+              }
+            });
+
+            // 3. SVGs
+            document.querySelectorAll('svg').forEach(el => {
+              addCandidate(el, '<svg>', 'inline-svg');
+            });
+
+            return candidates;
+          });
+
+          if (visualCandidates.length > 0) {
+            for (let i = 0; i < visualCandidates.length; i++) {
               if (signal?.aborted) break;
               
-              setStatus(`OCR ${i + 1}/${imgs.length}`);
+              const { id, type, src } = visualCandidates[i];
+              setStatus(`OCR ${i + 1}/${visualCandidates.length}`);
 
-              const img = imgs[i];
               try {
-                const box = await img.boundingBox().catch(() => null);
+                // Find the element by its assigned audit ID
+                const el = await page.$(`[data-audit-id="${id}"]`);
+                if (!el) continue;
+
+                const box = await el.boundingBox().catch(() => null);
                 if (!box || box.width < 10 || box.height < 10) continue;
 
-                const imgBuf = await img.screenshot({ timeout: 5000 }).catch(() => null);
+                // Take a screenshot of the specific element
+                const imgBuf = await el.screenshot({ timeout: 5000 }).catch(() => null);
                 if (!imgBuf) continue;
 
                 const found = await this.ocrService.searchInBuffer(imgBuf, searchText);
                 if (found) {
-                  const src = await page.evaluate(el => el.getAttribute('src'), img).catch(() => 'unknown');
-                  
                   let screenshot = null;
                   if (screenshots) {
-                    const auditId = `ocr_${Math.random().toString(36).slice(2, 9)}`;
-                    await page.evaluate((el, id) => el.setAttribute('data-audit-id', id), img, auditId);
-                    setStatus(`OCR Screenshot`);
-                    screenshot = await this.crawler.captureScreenshot(page, auditId);
+                    setStatus(`Visual Match Screenshot`);
+                    screenshot = await this.crawler.captureScreenshot(page, id);
                   }
 
                   this.results.push({
                     pageUrl,
-                    type: 'OCR (Image)',
-                    tag: '<img>',
+                    type: `OCR (${type})`,
+                    tag: type,
                     content: `[OCR] ${src}`,
                     screenshot
                   });
                   if (this.dashboard) this.dashboard.incrementCount('ocr');
                 }
-              } catch (e) {}
+              } catch (e) {
+                // Silently skip failed individual element captures
+              }
             }
           }
         }

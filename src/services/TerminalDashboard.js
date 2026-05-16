@@ -13,12 +13,17 @@ export class TerminalDashboard {
     };
     this.startTime = Date.now();
     this.searchTerm = '';
+    this.timer = null;
   }
 
   init(totalUrls, searchTerm = '') {
     this.totalUrls = totalUrls;
     this.searchTerm = searchTerm;
     this.render();
+    
+    // Start continuous timer for live elapsed time updates
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => this.render(), 1000);
   }
 
   updateProgress(completed, total) {
@@ -110,6 +115,10 @@ export class TerminalDashboard {
   }
 
   finalize(outputPath) {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
     this.render();
     console.log(`\n\x1b[1m\x1b[32m✔ Audit Complete!\x1b[0m`);
     console.log(`Report saved to: \x1b[4m${outputPath}\x1b[0m\n`);

@@ -121,16 +121,28 @@ export class OcrService {
       const metadata = await sharp(imageBuffer).metadata();
       let pipeline = sharp(imageBuffer).flatten({ background: '#ffffff' }); 
       
-      // Increased resolution for better detail
-      const targetWidth = Math.max(1600, (metadata.width || 0) * 4);
+      const targetWidth = Math.max(2000, (metadata.width || 0) * 5);
       pipeline = pipeline.resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 });
 
       switch (type) {
         case 'red':
           pipeline = pipeline.extractChannel('red').normalize().sharpen();
           break;
+        case 'green':
+          pipeline = pipeline.extractChannel('green').normalize().sharpen();
+          break;
+        case 'blue':
+          pipeline = pipeline.extractChannel('blue').normalize().sharpen();
+          break;
         case 'contrast':
-          pipeline = pipeline.grayscale().linear(3, -0.7).sharpen();
+          pipeline = pipeline.grayscale().modulate({ brightness: 1.2, contrast: 2.5 }).normalize().sharpen();
+          break;
+        case 'gamma':
+          pipeline = pipeline.grayscale().gamma(2.2).normalize().sharpen();
+          break;
+        case 'threshold_adaptive':
+          // Use linear/normalize to simulate adaptive contrast
+          pipeline = pipeline.grayscale().normalize().linear(2, -0.5).sharpen();
           break;
         case 't200':
           pipeline = pipeline.grayscale().threshold(200).sharpen();
@@ -163,21 +175,25 @@ export class OcrService {
       if (!this.scheduler) return false;
 
       const metadata = await sharp(imageBuffer).metadata();
-      const targetWidth = Math.max(1600, (metadata.width || 0) * 4);
+      const targetWidth = Math.max(2000, (metadata.width || 0) * 5);
       
       const upscaledBase = await sharp(imageBuffer)
         .flatten({ background: '#ffffff' })
         .resize({ width: Math.round(targetWidth), kernel: sharp.kernel.lanczos3 })
         .toBuffer();
 
-      // Parallelize preprocessing to save time
-      const [bufT200, bufT150, bufT100, bufRed, bufInv, bufContrast, bufGray] = await Promise.all([
+      // Parallelize preprocessing
+      const [bufT200, bufT150, bufT100, bufRed, bufGreen, bufBlue, bufInv, bufContrast, bufGamma, bufAdaptive, bufGray] = await Promise.all([
         this.preprocessImage(imageBuffer, 't200'),
         this.preprocessImage(imageBuffer, 't150'),
         this.preprocessImage(imageBuffer, 't100'),
         this.preprocessImage(imageBuffer, 'red'),
+        this.preprocessImage(imageBuffer, 'green'),
+        this.preprocessImage(imageBuffer, 'blue'),
         this.preprocessImage(imageBuffer, 'inv'),
         this.preprocessImage(imageBuffer, 'contrast'),
+        this.preprocessImage(imageBuffer, 'gamma'),
+        this.preprocessImage(imageBuffer, 'threshold_adaptive'),
         this.preprocessImage(imageBuffer, 'gray')
       ]);
 
@@ -188,14 +204,17 @@ export class OcrService {
         { name: 't150', buf: bufT150, psm: '11' },
         { name: 't100', buf: bufT100, psm: '11' },
         { name: 'red', buf: bufRed, psm: '11' },
+        { name: 'green', buf: bufGreen, psm: '11' },
+        { name: 'blue', buf: bufBlue, psm: '11' },
         { name: 'inv', buf: bufInv, psm: '11' },
         { name: 'contrast', buf: bufContrast, psm: '11' },
+        { name: 'gamma', buf: bufGamma, psm: '11' },
+        { name: 'adaptive', buf: bufAdaptive, psm: '11' },
         { name: 'gray', buf: bufGray, psm: '11' }
       ];
 
       const normalizedSearch = searchText.replace(/\s+/g, ' ').trim().toLowerCase();
       
-      // Run ALL OCR passes in parallel using the scheduler pool
       const results = await Promise.all(passes.map(async (pass) => {
         try {
           const res = await this.scheduler.addJob('recognize', pass.buf, {
@@ -216,13 +235,15 @@ export class OcrService {
         const normalizedText = text.replace(/\s+/g, ' ').trim().toLowerCase();
         allText += ' ' + normalizedText;
 
+        // Debug logging (internal use)
+        // fs.appendFileSync('ocr_debug.log', `[${res.name}] Conf: ${confidence} | Text: ${normalizedText}\n`);
+
         if (this.isFuzzyMatch(normalizedText, normalizedSearch)) {
-          // If we found a match with reasonable confidence, return true
-          if (confidence > 15) return true; 
+          // Extremely sensitive threshold for difficult images
+          if (confidence > 5) return true; 
         }
       }
 
-      // Final check on aggregated text across all passes
       if (this.isFuzzyMatch(allText, normalizedSearch)) return true;
 
       return false;

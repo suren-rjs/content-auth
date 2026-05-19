@@ -14,15 +14,14 @@ const program = new Command();
 program
   .name('content-audit')
   .description('Comprehensive website content audit: Search visible text, hidden attributes, and images')
-  .version('1.2.0')
+  .version('1.3.0')
   .option('-u, --url <url>', 'Single URL to audit')
   .option('-f, --file <path>', 'Text file containing list of URLs to audit (one per line)')
   .requiredOption('-c, --content <content>', 'Text content to search for')
   .option('-o, --output <path>', 'Output Excel file path', 'results.xlsx')
   .option('-t, --threads <number>', 'Number of concurrent requests', '5')
-  .option('-i, --interact <selector>', 'CSS selector to click before searching (e.g. ".expand-btn")')
   .action(async (options) => {
-    let { url, file, content, output, threads, interact } = options;
+    let { url, file, content, output, threads } = options;
     
     let urls = [];
     if (url) {
@@ -64,7 +63,6 @@ program
 
     try {
       await service.execute(urls, content, output, {
-        interactionSelector: interact,
         screenshots: true,
         signal: controller.signal,
         noFollow: true 

@@ -88,7 +88,8 @@ export class WebCrawler extends ICrawler {
       if (!el) return null;
 
       await el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
-      await new Promise(r => setTimeout(r, 300)); 
+      // Increased wait for layout to settle and lazy content to appear
+      await new Promise(r => setTimeout(r, 800)); 
 
       const box = await el.boundingBox();
       if (!box || box.width === 0 || box.height === 0) return null;
@@ -111,6 +112,9 @@ export class WebCrawler extends ICrawler {
         ov.style.boxSizing = 'border-box';
         document.body.appendChild(ov);
       }, auditId);
+
+      // Final short wait after overlay is added
+      await new Promise(r => setTimeout(r, 200));
 
       const buf = await page.screenshot({ fullPage: false });
       await this.clearOverlays(page);
@@ -143,7 +147,7 @@ export class WebCrawler extends ICrawler {
     await page.evaluate(async () => {
       await new Promise((resolve) => {
         let totalHeight = 0;
-        let distance = 100;
+        let distance = 200; // Increased distance for faster but reliable scroll
         let timer = setInterval(() => {
           let scrollHeight = document.body.scrollHeight;
           window.scrollBy(0, distance);
@@ -152,11 +156,11 @@ export class WebCrawler extends ICrawler {
             clearInterval(timer);
             resolve();
           }
-        }, 100);
+        }, 150);
       });
     });
-    // Wait a bit for images to load after scroll
-    await new Promise(r => setTimeout(r, 2000));
+    // Wait for images/content to load after scroll
+    await new Promise(r => setTimeout(r, 3000));
   }
 
   /**
@@ -179,39 +183,26 @@ export class WebCrawler extends ICrawler {
       try {
         page = await this.browser.newPage();
         if (options.onStatus) options.onStatus(url, 'Initializing...');
-        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 3 });
+        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 2 }); // Reduced scale slightly for stability
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
         
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-          const type = req.resourceType();
-          if (['font', 'media', 'websocket'].includes(type)) return req.abort();
-          return req.continue();
-        });
+        // Removed request interception that might block essential assets
+        // Using networkidle2 instead for better stability
 
         const response = await page.goto(url, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 60000 
+          waitUntil: 'networkidle2', // Wait for network to be idle (mostly)
+          timeout: 90000 // Increased timeout for heavy pages
         });
 
-        if (options.onStatus) options.onStatus(url, 'Waiting for network...');
-        await page.waitForNetworkIdle({ timeout: 15000 }).catch(() => {});
+        if (options.onStatus) options.onStatus(url, 'Waiting for fonts...');
+        await page.evaluateHandle(() => document.fonts.ready).catch(() => {});
         
         // Trigger lazy loading
         if (options.onStatus) options.onStatus(url, 'Scrolling...');
         await this.scrollToBottom(page);
 
-        if (signal?.aborted) return;
-
-        if (options.interactionSelector) {
-          try {
-            if (options.onStatus) options.onStatus(url, 'Interacting...');
-            await page.waitForSelector(options.interactionSelector, { timeout: 10000 });
-            await page.click(options.interactionSelector);
-            await new Promise(r => setTimeout(r, 2000));
-            await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
-          } catch (e) {}
-        }
+        // One more idle check after scrolling
+        await page.waitForNetworkIdle({ timeout: 5000 }).catch(() => {});
 
         if (signal?.aborted) return;
 

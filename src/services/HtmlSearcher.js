@@ -10,8 +10,13 @@ export class HtmlSearcher extends ISearcher {
       const hits = [];
       const seenEl = new Set();
 
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const startBoundary = /^\w/.test(lc) ? '\\b' : '';
+      const endBoundary = /\w$/.test(lc) ? '\\b' : '';
+      const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
+
       // 1. Page Title
-      if (document.title && document.title.toLowerCase().includes(lc)) {
+      if (document.title && regex.test(document.title)) {
         hits.push({
           type: 'Page Title',
           tag: '<title>',
@@ -28,7 +33,7 @@ export class HtmlSearcher extends ISearcher {
         const matchedAttrs = [];
         for (const attr of ['name', 'property', 'content', 'http-equiv', 'charset']) {
           const val = (el.getAttribute(attr) || '').trim();
-          if (val.toLowerCase().includes(lc)) matchedAttrs.push(`${attr}="${val}"`);
+          if (regex.test(val)) matchedAttrs.push(`${attr}="${val}"`);
         }
         if (matchedAttrs.length === 0) return;
 
@@ -52,6 +57,11 @@ export class HtmlSearcher extends ISearcher {
       const hits = [];
       const seen = new Set();
 
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const startBoundary = /^\w/.test(lc) ? '\\b' : '';
+      const endBoundary = /\w$/.test(lc) ? '\\b' : '';
+      const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
+
       const push = (attr, val, tag) => {
         // Truncate very long base64 or data strings to keep report clean
         const displayVal = val.length > 300 ? val.substring(0, 297) + '...' : val;
@@ -71,19 +81,19 @@ export class HtmlSearcher extends ISearcher {
       
       document.querySelectorAll('*').forEach(el => {
         const tagName = el.tagName.toLowerCase();
-        if (['script', 'style', 'noscript', 'link'].includes(tagName)) return;
+        if (['script', 'style', 'link'].includes(tagName)) return;
 
         // Check defined whitelist
         for (const attr of ATTRIBUTES) {
           const v = (el.getAttribute(attr) || '').trim();
-          if (v.toLowerCase().includes(lc)) push(attr, v, tagName);
+          if (regex.test(v)) push(attr, v, tagName);
         }
 
         // Check all data-* attributes
         for (const attr of el.getAttributeNames()) {
           if (attr.startsWith('data-')) {
             const v = (el.getAttribute(attr) || '').trim();
-            if (v.toLowerCase().includes(lc)) push(attr, v, tagName);
+            if (regex.test(v)) push(attr, v, tagName);
           }
         }
       });
@@ -97,8 +107,14 @@ export class HtmlSearcher extends ISearcher {
    */
   async scanVisibleText(page, term) {
     return page.evaluate((lc) => {
-      const SKIP = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'HEAD', 'META', 'LINK', 'IFRAME']);
+      const SKIP = new Set(['SCRIPT', 'STYLE', 'HEAD', 'META', 'LINK', 'IFRAME']);
       document.querySelectorAll('[data-audit-id]').forEach(e => e.removeAttribute('data-audit-id'));
+
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const startBoundary = /^\w/.test(lc) ? '\\b' : '';
+      const endBoundary = /\w$/.test(lc) ? '\\b' : '';
+      const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
+      const globalRegex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'gi');
 
       let counter = 0;
       const results = [];
@@ -131,23 +147,30 @@ export class HtmlSearcher extends ISearcher {
 
       while (walker.nextNode()) {
         const node = walker.currentNode;
-        const isSvg = node.tagName === 'SVG';
+        const tagName = node.tagName;
+        const isSvg = tagName === 'SVG';
+        const isNoscript = tagName === 'NOSCRIPT';
         
         let text = '';
         if (isSvg) {
           text = getSvgText(node);
+        } else if (isNoscript) {
+          text = node.textContent.trim();
         } else {
           try { text = node.innerText.trim(); } catch { continue; }
         }
 
-        if (!text || !text.toLowerCase().includes(lc)) continue;
+        if (!text || !regex.test(text)) continue;
 
         // Leaf match: none of the children contain the term
-        // For SVG, we treat the root <svg> as the leaf for highlighting purposes
-        if (!isSvg) {
+        // For SVG and NOSCRIPT, we treat the root as the leaf for highlighting purposes
+        if (!isSvg && !isNoscript) {
           const childOwns = [...node.children].some(c => {
             if (SKIP.has(c.tagName)) return false;
-            try { return (c.innerText || '').toLowerCase().includes(lc); }
+            try { 
+              const cText = c.innerText || '';
+              return regex.test(cText);
+            }
             catch { return false; }
           });
           if (childOwns) continue;
@@ -157,21 +180,18 @@ export class HtmlSearcher extends ISearcher {
         node.setAttribute('data-audit-id', id);
 
         // Count occurrences within this leaf
-        let occurrences = 0;
-        let pos = text.toLowerCase().indexOf(lc);
-        while (pos !== -1) {
-          occurrences++;
-          pos = text.toLowerCase().indexOf(lc, pos + lc.length);
-        }
-        if (occurrences === 0) occurrences = 1;
+        const matches = text.match(globalRegex);
+        const occurrences = matches ? matches.length : 1;
 
         const baseText = text.replace(/\s+/g, ' ');
-        const type = isSvg ? 'SVG Content' : 'Visible Text';
+        let type = 'Visible Text';
+        if (isSvg) type = 'SVG Content';
+        if (isNoscript) type = 'Noscript Content';
         
         for (let i = 0; i < occurrences; i++) {
           results.push({
             type: type,
-            tag: `<${node.tagName.toLowerCase()}>`,
+            tag: `<${tagName.toLowerCase()}>`,
             content: occurrences > 1 ? `${baseText} [instance ${i + 1} of ${occurrences}]` : baseText,
             auditId: id,
             isMultiple: occurrences > 1
@@ -188,10 +208,11 @@ export class HtmlSearcher extends ISearcher {
    */
   countOccurrences(html, searchText) {
     const $ = cheerio.load(html);
-    const text = $('body').text().toLowerCase();
-    const normalizedSearch = searchText.toLowerCase();
-    const escapedSearch = normalizedSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escapedSearch, 'g');
+    const text = $('body').text();
+    const escapedSearch = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const startBoundary = /^\w/.test(searchText) ? '\\b' : '';
+    const endBoundary = /\w$/.test(searchText) ? '\\b' : '';
+    const regex = new RegExp(`${startBoundary}${escapedSearch}${endBoundary}`, 'gi');
     const matches = text.match(regex);
     return matches ? matches.length : 0;
   }

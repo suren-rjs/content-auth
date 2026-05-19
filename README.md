@@ -60,7 +60,6 @@ content-audit -f urls.txt -c "Search Text" -o report.xlsx
 - `-c, --content <content>`: **(Required)** The text content to search for.
 - `-o, --output <path>`: Output Excel file path (default: `results.xlsx`).
 - `-t, --threads <number>`: Number of concurrent browser instances (default: `5`).
-- `-i, --interact <selector>`: CSS selector to click (e.g., cookie banner, "Read More") before searching.
 
 ## Examples
 
@@ -71,11 +70,6 @@ content-audit -f urls.txt -c "Search Text" -o report.xlsx
 # https://site2.com/page
 
 content-audit -f urls.txt -c "Confidential" -o audit-report.xlsx
-```
-
-### Handling Interactive Pages
-```bash
-content-audit -u https://yoursite.com -c "Success" -i ".expand-button"
 ```
 
 ### Using with node directly

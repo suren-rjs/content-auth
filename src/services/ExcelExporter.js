@@ -118,13 +118,28 @@ export class ExcelExporter extends IExporter {
 
         if (item.screenshot) {
           try {
-            const imgId = workbook.addImage({ buffer: item.screenshot, extension: 'png' });
-            ws.addImage(imgId, {
-              tl: { col: 4, row: rowNum - 1 },
-              ext: { width: this.IMG_W, height: this.IMG_H },
-              editAs: 'oneCell',
-            });
-            row.height = this.ROW_H;
+            let imgConfig = null;
+            if (typeof item.screenshot === 'string' && fs.existsSync(item.screenshot)) {
+              imgConfig = { filename: item.screenshot, extension: 'png' };
+            } else if (Buffer.isBuffer(item.screenshot)) {
+              imgConfig = { buffer: item.screenshot, extension: 'png' };
+            }
+
+            if (imgConfig) {
+              // Set row height BEFORE adding the image to ensure correct anchoring
+              row.height = this.ROW_H;
+              const imgId = workbook.addImage(imgConfig);
+              
+              // Use range-based placement for better compatibility
+              // Column 4 is E, so we use col 4 for both tl and br to fit in one cell
+              ws.addImage(imgId, {
+                tl: { col: 4, row: rowNum - 1 },
+                br: { col: 5, row: rowNum },
+                editAs: 'oneCell'
+              });
+            } else {
+              row.getCell(5).value = '(no image data)';
+            }
           } catch (e) {
             row.getCell(5).value = '(img error)';
           }

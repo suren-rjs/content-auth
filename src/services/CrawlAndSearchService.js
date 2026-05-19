@@ -12,6 +12,7 @@ export class CrawlAndSearchService {
     this.urlsProcessed = new Set();
     this.isFinalizing = false;
     this.checkpointFile = 'audit_checkpoint.json';
+    this.tempDir = path.resolve(process.cwd(), '.audit_temp');
     
     if (this.ocrService && this.dashboard) {
       this.ocrService.setDashboard(this.dashboard);
@@ -24,10 +25,7 @@ export class CrawlAndSearchService {
         const raw = fs.readFileSync(this.checkpointFile, 'utf8');
         const data = JSON.parse(raw);
         this.urlsProcessed = new Set(data.completedUrls || []);
-        this.results = (data.results || []).map(r => ({
-          ...r,
-          screenshot: r.screenshot ? Buffer.from(r.screenshot, 'base64') : null
-        }));
+        this.results = data.results || [];
         if (this.dashboard) {
           this.dashboard.updateStatus(`Resumed from checkpoint: ${this.urlsProcessed.size} URLs`);
         }
@@ -40,10 +38,7 @@ export class CrawlAndSearchService {
     try {
       const serialisable = {
         completedUrls: [...this.urlsProcessed],
-        results: this.results.map(r => ({
-          ...r,
-          screenshot: Buffer.isBuffer(r.screenshot) ? r.screenshot.toString('base64') : r.screenshot
-        }))
+        results: this.results
       };
       fs.writeFileSync(this.checkpointFile, JSON.stringify(serialisable), 'utf8');
     } catch (e) {}
@@ -53,6 +48,17 @@ export class CrawlAndSearchService {
     const { screenshots = true, signal } = options;
     const urlList = Array.isArray(urls) ? urls : [urls];
     
+    // Clear output file before starting
+    if (fs.existsSync(outputPath)) {
+      try {
+        fs.unlinkSync(outputPath);
+      } catch (e) {}
+    }
+
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
+
     if (this.dashboard) {
       this.dashboard.init(urlList.length, searchText);
     }
@@ -83,7 +89,7 @@ export class CrawlAndSearchService {
         // 1. Meta Tags / Page Title
         const metaHits = await this.searcher.scanMeta(page, searchText);
         if (metaHits.length) {
-          this.results.push(...metaHits.map(h => ({ ...h, pageUrl })));
+          this.results.push(...metaHits.map(h => ({ ...h, pageUrl, screenshot: null })));
           if (this.dashboard) this.dashboard.incrementCount('meta', metaHits.length);
         }
 
@@ -92,7 +98,7 @@ export class CrawlAndSearchService {
         // 2. Attributes
         const attrHits = await this.searcher.scanAttributes(page, searchText);
         if (attrHits.length) {
-          this.results.push(...attrHits.map(h => ({ ...h, pageUrl })));
+          this.results.push(...attrHits.map(h => ({ ...h, pageUrl, screenshot: null })));
           if (this.dashboard) this.dashboard.incrementCount('attr', attrHits.length);
         }
 
@@ -104,41 +110,40 @@ export class CrawlAndSearchService {
           for (const hit of textHits) {
             if (signal?.aborted) break;
             
-            let screenshot = null;
+            let screenshotPath = null;
             if (screenshots && hit.auditId) {
               setStatus(`Screenshot: ${hit.auditId}`);
-              screenshot = await this.crawler.captureScreenshot(page, hit.auditId);
+              const buf = await this.crawler.captureScreenshot(page, hit.auditId);
+              if (buf) {
+                screenshotPath = path.join(this.tempDir, `shot_${Date.now()}_${Math.random().toString(36).slice(2)}.png`);
+                fs.writeFileSync(screenshotPath, buf);
+              }
             }
-            this.results.push({ ...hit, pageUrl, screenshot });
+            this.results.push({ ...hit, pageUrl, screenshot: screenshotPath });
             if (this.dashboard) this.dashboard.incrementCount('text');
           }
         }
 
         if (signal?.aborted) return;
 
-        // 4. OCR & Visual Audit (Expanded to handle BG images, SVGs, etc.)
+        // 4. OCR & Visual Audit
         if (this.ocrService && page) {
           const visualCandidates = await page.evaluate(() => {
             const candidates = [];
             let counter = 0;
 
-            // Helper to mark and add candidate
             const addCandidate = (el, type, src) => {
               const id = `vis_${++counter}`;
               el.setAttribute('data-audit-id', id);
               candidates.push({ id, type, src });
             };
 
-            // 1. img tags
             document.querySelectorAll('img').forEach(el => {
               addCandidate(el, '<img>', el.src || 'src-unknown');
             });
 
-            // 2. Background images
             document.querySelectorAll('*').forEach(el => {
-              // Skip if it's already an <img> we processed
               if (el.tagName === 'IMG') return;
-              
               const style = window.getComputedStyle(el);
               const bg = style.backgroundImage;
               if (bg && bg !== 'none' && bg.startsWith('url(')) {
@@ -147,7 +152,6 @@ export class CrawlAndSearchService {
               }
             });
 
-            // 3. SVGs
             document.querySelectorAll('svg').forEach(el => {
               addCandidate(el, '<svg>', 'inline-svg');
             });
@@ -163,23 +167,27 @@ export class CrawlAndSearchService {
               setStatus(`OCR ${i + 1}/${visualCandidates.length}`);
 
               try {
-                // Find the element by its assigned audit ID
                 const el = await page.$(`[data-audit-id="${id}"]`);
                 if (!el) continue;
 
                 const box = await el.boundingBox().catch(() => null);
-                if (!box || box.width < 10 || box.height < 10) continue;
+                // Sanity check: Skip invisible or giant elements that would crash OCR
+                if (!box || box.width < 5 || box.height < 5) continue;
+                if (box.width > 2500 || box.height > 2500) continue; 
 
-                // Take a screenshot of the specific element
                 const imgBuf = await el.screenshot({ timeout: 5000 }).catch(() => null);
                 if (!imgBuf) continue;
 
-                const found = await this.ocrService.searchInBuffer(imgBuf, searchText);
+                const found = await this.ocrService.searchInBuffer(imgBuf, searchText).catch(() => false);
                 if (found) {
-                  let screenshot = null;
+                  let screenshotPath = null;
                   if (screenshots) {
                     setStatus(`Visual Match Screenshot`);
-                    screenshot = await this.crawler.captureScreenshot(page, id);
+                    const buf = await this.crawler.captureScreenshot(page, id);
+                    if (buf) {
+                      screenshotPath = path.join(this.tempDir, `shot_ocr_${Date.now()}_${Math.random().toString(36).slice(2)}.png`);
+                      fs.writeFileSync(screenshotPath, buf);
+                    }
                   }
 
                   this.results.push({
@@ -187,13 +195,11 @@ export class CrawlAndSearchService {
                     type: `OCR (${type})`,
                     tag: type,
                     content: `[OCR] ${src}`,
-                    screenshot
+                    screenshot: screenshotPath
                   });
                   if (this.dashboard) this.dashboard.incrementCount('ocr');
                 }
-              } catch (e) {
-                // Silently skip failed individual element captures
-              }
+              } catch (e) {}
             }
           }
         }
@@ -201,7 +207,7 @@ export class CrawlAndSearchService {
         this.urlsProcessed.add(pageUrl);
         if (this.dashboard) {
           this.dashboard.updateProgress(this.urlsProcessed.size);
-          this.dashboard.updateWorker(pageUrl, null); // Remove from active
+          this.dashboard.updateWorker(pageUrl, null);
         }
         this.saveCheckpoint();
       }, { 
@@ -237,6 +243,15 @@ export class CrawlAndSearchService {
       if (this.ocrService) await this.ocrService.terminate();
       if (this.crawler) await this.crawler.close();
       if (fs.existsSync(this.checkpointFile)) fs.unlinkSync(this.checkpointFile);
+      
+      // Cleanup temp screenshots
+      if (fs.existsSync(this.tempDir)) {
+        const files = fs.readdirSync(this.tempDir);
+        for (const file of files) {
+          fs.unlinkSync(path.join(this.tempDir, file));
+        }
+        fs.rmdirSync(this.tempDir);
+      }
     } catch (err) {}
 
     if (this.dashboard) {

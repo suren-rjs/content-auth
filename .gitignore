@@ -25,3 +25,4 @@ coverage/
 .vscode/
 .idea/
 eng.traineddata
+urls.txt

@@ -10,7 +10,7 @@ export class HtmlSearcher extends ISearcher {
       const hits = [];
       const seenEl = new Set();
 
-      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
       const startBoundary = /^\w/.test(lc) ? '\\b' : '';
       const endBoundary = /\w$/.test(lc) ? '\\b' : '';
       const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
@@ -57,7 +57,7 @@ export class HtmlSearcher extends ISearcher {
       const hits = [];
       const seen = new Set();
 
-      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
       const startBoundary = /^\w/.test(lc) ? '\\b' : '';
       const endBoundary = /\w$/.test(lc) ? '\\b' : '';
       const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
@@ -103,14 +103,14 @@ export class HtmlSearcher extends ISearcher {
   }
 
   /**
-   * Scans visible text and SVG content using a leaf-match strategy.
+   * Scans visible and hidden text and SVG content using a leaf-match strategy.
    */
   async scanVisibleText(page, term) {
     return page.evaluate((lc) => {
       const SKIP = new Set(['SCRIPT', 'STYLE', 'HEAD', 'META', 'LINK', 'IFRAME']);
       document.querySelectorAll('[data-audit-id]').forEach(e => e.removeAttribute('data-audit-id'));
 
-      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedTerm = lc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
       const startBoundary = /^\w/.test(lc) ? '\\b' : '';
       const endBoundary = /\w$/.test(lc) ? '\\b' : '';
       const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
@@ -151,16 +151,19 @@ export class HtmlSearcher extends ISearcher {
         const isSvg = tagName === 'SVG';
         const isNoscript = tagName === 'NOSCRIPT';
         
-        let text = '';
+        let rawText = '';
         if (isSvg) {
-          text = getSvgText(node);
-        } else if (isNoscript) {
-          text = node.textContent.trim();
+          rawText = getSvgText(node);
         } else {
-          try { text = node.innerText.trim(); } catch { continue; }
+          // Use textContent to find hidden text, but skip script/style content via TreeWalker filter
+          rawText = node.textContent || '';
         }
 
-        if (!text || !regex.test(text)) continue;
+        const text = rawText.trim();
+        // Normalize text by collapsing all whitespace for robust matching
+        const normalizedText = text.replace(/\s+/g, ' ');
+
+        if (!normalizedText || !regex.test(normalizedText)) continue;
 
         // Leaf match: none of the children contain the term
         // For SVG and NOSCRIPT, we treat the root as the leaf for highlighting purposes
@@ -168,7 +171,7 @@ export class HtmlSearcher extends ISearcher {
           const childOwns = [...node.children].some(c => {
             if (SKIP.has(c.tagName)) return false;
             try { 
-              const cText = c.innerText || '';
+              const cText = (c.textContent || '').trim().replace(/\s+/g, ' ');
               return regex.test(cText);
             }
             catch { return false; }
@@ -180,11 +183,11 @@ export class HtmlSearcher extends ISearcher {
         node.setAttribute('data-audit-id', id);
 
         // Count occurrences within this leaf
-        const matches = text.match(globalRegex);
+        const matches = normalizedText.match(globalRegex);
         const occurrences = matches ? matches.length : 1;
 
-        const baseText = text.replace(/\s+/g, ' ');
-        let type = 'Visible Text';
+        const baseText = normalizedText;
+        let type = 'Text Content';
         if (isSvg) type = 'SVG Content';
         if (isNoscript) type = 'Noscript Content';
         
@@ -208,8 +211,8 @@ export class HtmlSearcher extends ISearcher {
    */
   countOccurrences(html, searchText) {
     const $ = cheerio.load(html);
-    const text = $('body').text();
-    const escapedSearch = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const text = $('body').text().replace(/\s+/g, ' ');
+    const escapedSearch = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
     const startBoundary = /^\w/.test(searchText) ? '\\b' : '';
     const endBoundary = /\w$/.test(searchText) ? '\\b' : '';
     const regex = new RegExp(`${startBoundary}${escapedSearch}${endBoundary}`, 'gi');

@@ -26,3 +26,4 @@ coverage/
 .idea/
 eng.traineddata
 urls.txt
+.audit_temp/**

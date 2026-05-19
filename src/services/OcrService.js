@@ -72,7 +72,7 @@ export class OcrService {
     if (!text || !term) return false;
     const normalizedText = text.replace(/\s+/g, ' ').trim();
     const normalizedTerm = term.replace(/\s+/g, ' ').trim();
-    const escapedTerm = normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedTerm = normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
     const startBoundary = /^\w/.test(normalizedTerm) ? '\\b' : '';
     const endBoundary = /\w$/.test(normalizedTerm) ? '\\b' : '';
     const regex = new RegExp(`${startBoundary}${escapedTerm}${endBoundary}`, 'i');
